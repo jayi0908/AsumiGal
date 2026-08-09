@@ -60,7 +60,7 @@ type ImportState = 'none' | 'choice' | 'search_params' | 'search_results' | 'man
 type GameFileStatus = 'disk' | 'local';
 
 export function InstancesPage({ instances, setInstances, onLaunch, settingsTargetId, onConsumeSettingsTarget, focusInstanceId, onConsumeFocusInstance }: InstancesPageProps) {
-  const { config } = useTheme();
+  const { config, updateConfig } = useTheme();
   const { showToast } = useToast();
   
   const [bottles, setBottles] = useState<string[]>([]);
@@ -117,6 +117,7 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
     if (target) {
       setFormData({
         ...target,
+        bottleName: target.bottleName || (target.runMode === 'parallels' ? (config.defaultPdVm || '') : (target.runMode === 'crossover' ? (effectiveDefaultBottle) : '')),
         diskGameRoot: target.diskGameRoot || config.defaultDiskGameRoot || '',
         localGameRoot: target.localGameRoot || config.defaultLocalGameRoot || '',
       });
@@ -263,10 +264,11 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
       };
       setFormData(updatedFormData);
 
+      const runMode = updatedFormData.runMode || 'crossover';
       const newInstance = {
         ...updatedFormData,
-        runMode: updatedFormData.runMode || 'crossover',
-        bottleName: updatedFormData.bottleName || (updatedFormData.runMode === 'parallels' ? (config.defaultPdVm || '') : (updatedFormData.runMode === 'crossover' ? (config.defaultBottle || 'Default') : ''))
+        runMode,
+        bottleName: updatedFormData.bottleName || (runMode === 'parallels' ? (config.defaultPdVm || '') : (runMode === 'crossover' ? (effectiveDefaultBottle) : ''))
       } as GameInstance;
 
       const newInstances = instances.find(i => i.id === newInstance.id)
@@ -287,7 +289,11 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
   const fetchContainers = async () => {
     try {
       const res = await invoke<string[]>("get_crossover_bottles", { path: config.bottlesPath });
-      setBottles(res.length > 0 ? res : ["Default"]);
+      const validBottles = res.length > 0 ? res : ["Default"];
+      setBottles(validBottles);
+      if (!validBottles.includes(config.defaultBottle)) {
+        updateConfig({ defaultBottle: validBottles[0] });
+      }
     } catch (e) { setBottles(["Default"]); }
     
     try {
@@ -301,6 +307,8 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
       setScripts(res || []);
     } catch (e) { setScripts([]); }
   };
+
+  const effectiveDefaultBottle = bottles.includes(config.defaultBottle) ? config.defaultBottle : (bottles[0] || 'Default');
 
   const handleOpenScriptModal = (targetId: string | null, currentScript: string) => {
     setScriptModal(prev => ({
@@ -394,10 +402,11 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
       showToast("名称和可执行文件路径不能为空", "error");
       return;
     }
+    const runMode = formData.runMode || 'crossover';
     const newInstance = {
       ...formData,
-      runMode: formData.runMode || 'crossover',
-      bottleName: formData.bottleName || (formData.runMode === 'parallels' ? (config.defaultPdVm || '') : (formData.runMode === 'crossover' ? (config.defaultBottle || 'Default') : ''))
+      runMode,
+      bottleName: formData.bottleName || (runMode === 'parallels' ? (config.defaultPdVm || '') : (runMode === 'crossover' ? (effectiveDefaultBottle) : ''))
     } as GameInstance;
 
     let newInstances = instances.find(i => i.id === newInstance.id) 
@@ -436,7 +445,7 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
           executables: d.executables,
           selectedExec: d.executables[0],
           runMode: 'crossover',
-          bottleName: config.defaultBottle || bottles[0] || 'Default',
+          bottleName: effectiveDefaultBottle,
           status: 'pending',
           matchedResult: null,
           searchResults: [],
@@ -521,13 +530,17 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
   const isEditing = selectedId !== null || importState === 'manual_form';
 
   useEffect(() => {
-    if (!selectedId) return;
-    setFormData(prev => ({
-      ...prev,
-      diskGameRoot: prev.diskGameRoot || config.defaultDiskGameRoot || '',
-      localGameRoot: prev.localGameRoot || config.defaultLocalGameRoot || '',
-    }));
-  }, [selectedId, config.defaultDiskGameRoot, config.defaultLocalGameRoot]);
+    if (!selectedId && importState !== 'manual_form') return;
+    setFormData(prev => {
+      const runMode = prev.runMode || 'crossover';
+      return {
+        ...prev,
+        bottleName: prev.bottleName || (runMode === 'parallels' ? (config.defaultPdVm || '') : (runMode === 'crossover' ? (effectiveDefaultBottle) : '')),
+        diskGameRoot: prev.diskGameRoot || config.defaultDiskGameRoot || '',
+        localGameRoot: prev.localGameRoot || config.defaultLocalGameRoot || '',
+      };
+    });
+  }, [selectedId, importState, config.defaultDiskGameRoot, config.defaultLocalGameRoot, config.defaultBottle, config.defaultPdVm, effectiveDefaultBottle]);
 
   useEffect(() => {
     if (!focusInstanceId || isEditing) return;
@@ -615,7 +628,7 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
                       setFormData({ 
                         ...formData, 
                         runMode: mode,
-                        bottleName: mode === 'parallels' ? (config.defaultPdVm || pdVms[0] || '') : (mode === 'crossover' ? (config.defaultBottle || bottles[0] || 'Default') : '')
+                        bottleName: mode === 'parallels' ? (config.defaultPdVm || pdVms[0] || '') : (mode === 'crossover' ? (effectiveDefaultBottle) : '')
                       });
                     }}
                     className="w-full bg-black/5 dark:bg-white/5 border border-black/10 dark:border-white/10 rounded-lg px-4 py-2 pr-8 outline-none appearance-none transition-colors truncate"
@@ -657,7 +670,12 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
                           {pdVms.map(vm => <option key={vm} value={vm}>{vm}</option>)}
                         </>
                       ) : (
-                        bottles.map(b => <option key={b} value={b}>{b}</option>)
+                        <>
+                          {formData.bottleName && !bottles.includes(formData.bottleName) && (
+                            <option value={formData.bottleName}>{formData.bottleName} (当前)</option>
+                          )}
+                          {bottles.map(b => <option key={b} value={b}>{b}</option>)}
+                        </>
                       )}
                     </select>
                     <DropdownArrow />
@@ -836,7 +854,7 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
                   <>
                     <div className="fixed inset-0 z-30" onClick={() => setIsImportMenuOpen(false)} />
                     <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} className="absolute right-0 top-full mt-2 w-36 bg-white dark:bg-[#252525] border border-black/10 dark:border-white/10 rounded-lg shadow-xl z-40 overflow-hidden">
-                      <button onClick={() => { setIsImportMenuOpen(false); setFormData({ runMode: 'crossover', bottleName: config.defaultBottle || 'Default' }); setImportState('choice'); }} className="w-full text-left px-4 py-3 text-sm hover:bg-black/5 dark:hover:bg-white/5 transition-colors font-medium">单个导入</button>
+                      <button onClick={() => { setIsImportMenuOpen(false); setFormData({ runMode: 'crossover', bottleName: effectiveDefaultBottle }); setImportState('choice'); }} className="w-full text-left px-4 py-3 text-sm hover:bg-black/5 dark:hover:bg-white/5 transition-colors font-medium">单个导入</button>
                       <button onClick={handleBatchImportClick} className="w-full text-left px-4 py-3 text-sm hover:bg-black/5 dark:hover:bg-white/5 transition-colors font-medium border-t border-black/5 dark:border-white/5">批量导入</button>
                     </motion.div>
                   </>
@@ -863,7 +881,7 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
                       )}
                       <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-200 gap-4">
                         <button onClick={(e) => { e.stopPropagation(); onLaunch(inst); }} className="p-3 bg-blue-500 text-white rounded-full hover:bg-blue-600 hover:scale-110 transition-all shadow-lg"><Play size={24} className="ml-1" /></button>
-                        <button onClick={(e) => { e.stopPropagation(); setFormData({ ...inst, diskGameRoot: inst.diskGameRoot || config.defaultDiskGameRoot || '', localGameRoot: inst.localGameRoot || config.defaultLocalGameRoot || '' }); setSelectedId(inst.id); }} className="p-3 bg-white/20 backdrop-blur-md text-white rounded-full hover:bg-white/30 hover:scale-110 transition-all shadow-lg"><Settings size={24} /></button>
+                        <button onClick={(e) => { e.stopPropagation(); setFormData({ ...inst, bottleName: inst.bottleName || (inst.runMode === 'parallels' ? (config.defaultPdVm || '') : (inst.runMode === 'crossover' ? (effectiveDefaultBottle) : '')), diskGameRoot: inst.diskGameRoot || config.defaultDiskGameRoot || '', localGameRoot: inst.localGameRoot || config.defaultLocalGameRoot || '' }); setSelectedId(inst.id); }} className="p-3 bg-white/20 backdrop-blur-md text-white rounded-full hover:bg-white/30 hover:scale-110 transition-all shadow-lg"><Settings size={24} /></button>
                       </div>
                     </div>
                     <div className="p-4">
@@ -898,7 +916,7 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
                       <div className="p-4 bg-blue-500/10 rounded-full mb-4 group-hover:scale-110 transition-transform"><Search size={40} className="text-blue-500" /></div>
                       <span className="font-semibold text-lg text-blue-500">搜索导入</span>
                     </button>
-                    <button onClick={() => { setFormData({ id: crypto.randomUUID(), runMode: 'crossover', bottleName: config.defaultBottle || 'Default' }); setImportState('manual_form'); }} className="group flex flex-col items-center justify-center p-8 border-2 border-transparent bg-black/5 dark:bg-white/5 hover:bg-black/10 dark:hover:bg-white/10 hover:border-gray-500/30 rounded-2xl transition-all">
+                    <button onClick={() => { setFormData({ id: crypto.randomUUID(), runMode: 'crossover', bottleName: effectiveDefaultBottle }); setImportState('manual_form'); }} className="group flex flex-col items-center justify-center p-8 border-2 border-transparent bg-black/5 dark:bg-white/5 hover:bg-black/10 dark:hover:bg-white/10 hover:border-gray-500/30 rounded-2xl transition-all">
                       <div className="p-4 bg-black/5 dark:bg-white/10 rounded-full mb-4 group-hover:scale-110 transition-transform"><Box size={40} className="text-gray-500 dark:text-gray-400" /></div>
                       <span className="font-semibold text-lg">手动导入</span>
                     </button>
@@ -919,7 +937,7 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
                                 ...formData, 
                                 runMode: mode,
                                 executablePath: '', // 切换模式重置路径，以免 .exe 和 .app 互串
-                                bottleName: mode === 'parallels' ? (config.defaultPdVm || pdVms[0] || '') : (mode === 'crossover' ? (config.defaultBottle || bottles[0] || 'Default') : '')
+                                bottleName: mode === 'parallels' ? (config.defaultPdVm || pdVms[0] || '') : (mode === 'crossover' ? (effectiveDefaultBottle) : '')
                               });
                             }}
                           >
@@ -961,7 +979,12 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
                                   {pdVms.map(vm => <option key={vm} value={vm}>{vm}</option>)}
                                 </>
                               ) : (
-                                bottles.map(b => <option key={b} value={b}>{b}</option>)
+                                <>
+                                  {formData.bottleName && !bottles.includes(formData.bottleName) && (
+                                    <option value={formData.bottleName}>{formData.bottleName} (当前)</option>
+                                  )}
+                                  {bottles.map(b => <option key={b} value={b}>{b}</option>)}
+                                </>
                               )}
                             </select>
                             <DropdownArrow />
@@ -1110,7 +1133,7 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
                                     const mode = e.target.value as 'crossover' | 'parallels' | 'direct';
                                     updateBatchItem(item.id, {
                                       runMode: mode,
-                                      bottleName: mode === 'parallels' ? (config.defaultPdVm || pdVms[0] || '') : (mode === 'crossover' ? (config.defaultBottle || bottles[0] || 'Default') : '')
+                                      bottleName: mode === 'parallels' ? (config.defaultPdVm || pdVms[0] || '') : (mode === 'crossover' ? (effectiveDefaultBottle) : '')
                                     });
                                   }} 
                                   className="w-full bg-transparent border border-black/10 dark:border-white/10 rounded px-2 py-1.5 pr-8 outline-none appearance-none"

@@ -34,7 +34,11 @@ export function SettingsPage() {
     const loadContainers = async () => {
       try {
         const resBottles = await invoke<string[]>("get_crossover_bottles", { path: config.bottlesPath });
-        setBottles(resBottles.length > 0 ? resBottles : ["Default"]);
+        const validBottles = resBottles.length > 0 ? resBottles : ["Default"];
+        setBottles(validBottles);
+        if (!validBottles.includes(config.defaultBottle)) {
+          updateConfig({ defaultBottle: validBottles[0] });
+        }
       } catch (e) { setBottles(["Default"]); }
 
       try {
@@ -210,10 +214,13 @@ export function SettingsPage() {
                   <span className={labelClass}>CrossOver 全局默认容器</span>
                   <div className="relative">
                       <select 
-                        value={config.defaultBottle || "Default"}
+                        value={bottles.includes(config.defaultBottle || 'Default') ? (config.defaultBottle || 'Default') : (bottles[0] || 'Default')}
                         onChange={(e) => updateConfig({ defaultBottle: e.target.value })}
                         className={inputClass}
                       >
+                        {config.defaultBottle && !bottles.includes(config.defaultBottle) && (
+                            <option value={config.defaultBottle}>{config.defaultBottle} (当前)</option>
+                        )}
                         {bottles.map(b => (
                             <option key={b} value={b}>{b}</option>
                         ))}
@@ -234,10 +241,13 @@ export function SettingsPage() {
                   <span className={labelClass}>Parallels Desktop 全局默认虚拟机 (Applications)</span>
                   <div className="relative">
                       <select 
-                        value={config.defaultPdVm || "Default"}
+                        value={pdVms.includes(config.defaultPdVm || '') ? (config.defaultPdVm || '') : (pdVms[0] || '')}
                         onChange={(e) => updateConfig({ defaultPdVm: e.target.value })}
                         className={inputClass}
                       >
+                        {config.defaultPdVm && !pdVms.includes(config.defaultPdVm) && (
+                            <option value={config.defaultPdVm}>{config.defaultPdVm} (当前)</option>
+                        )}
                         {pdVms.map(vm => (
                             <option key={vm} value={vm}>{vm}</option>
                         ))}

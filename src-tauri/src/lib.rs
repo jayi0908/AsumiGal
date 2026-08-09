@@ -131,7 +131,7 @@ async fn search_game(keyword: String, source: String) -> Result<Vec<SearchResult
 
     match source.as_str() {
         "touchgal" => {
-            let url = "https://www.touchgal.top/api/search";
+            let url = "https://www.touchgal.ink/api/search";
             // 构造 queryString 内部 JSON
             let query_string_json = json!([
                 { "type": "keyword", "name": keyword }
@@ -158,12 +158,12 @@ async fn search_game(keyword: String, source: String) -> Result<Vec<SearchResult
             // 发送请求
             let res = client.post(url)
                 // 必须完全模拟浏览器的 Headers
-                .header("Host", "www.touchgal.top")
+                .header("Host", "www.touchgal.ink")
                 .header("Accept", "*/*")
                 .header("Accept-Language", "zh-CN,zh;q=0.9")
                 .header("Content-Type", "application/json") // 这里还是建议用 application/json
-                .header("Origin", "https://www.touchgal.top")
-                .header("Referer", "https://www.touchgal.top/search")
+                .header("Origin", "https://www.touchgal.ink")
+                .header("Referer", "https://www.touchgal.ink/search")
                 .header("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
                 .json(&body)
                 .send()
@@ -190,7 +190,7 @@ async fn search_game(keyword: String, source: String) -> Result<Vec<SearchResult
                         title: name,
                         cover: banner,
                         source: "TouchGal".to_string(),
-                        url: format!("https://www.touchgal.top/{}", unique_id),
+                        url: format!("https://www.touchgal.ink/{}", unique_id),
                         date: None
                     });
                 }
@@ -217,11 +217,13 @@ async fn search_game(keyword: String, source: String) -> Result<Vec<SearchResult
             let raw_text = res.text().await.map_err(|e| format!("Read Text Failed: {}", e))?;
             println!("[KunGal] 原始响应: {}", raw_text); // 调试用输出
 
-            // 2. 解析 JSON
+            // 2. 解析 JSON（新结构: { "code": 0, "data": { "items": [...] } }，兼容旧顶层数组）
             let json_val: serde_json::Value = serde_json::from_str(&raw_text)
                 .map_err(|e| format!("JSON Parse Failed: {}", e))?;
 
-            if let Some(games) = json_val.as_array() {
+            let games = json_val["data"]["items"].as_array()
+                .or_else(|| json_val.as_array());
+            if let Some(games) = games {
                 for g in games {
                     // id 有时是数字有时是字符串，统一处理
                     let id = if let Some(n) = g["id"].as_i64() {
@@ -245,8 +247,15 @@ async fn search_game(keyword: String, source: String) -> Result<Vec<SearchResult
                         g["name"].as_str().unwrap_or("未知标题").to_string()
                     };
 
-                    let banner = g["banner"].as_str().unwrap_or("").to_string();
-                    let update_time = g["resourceUpdateTime"].as_str()
+                    // 封面优先 effective_banner_url，回退 banner
+                    let banner = g["effective_banner_url"].as_str()
+                        .filter(|s| !s.is_empty())
+                        .or_else(|| g["banner"].as_str().filter(|s| !s.is_empty()))
+                        .unwrap_or("").to_string();
+                    // 日期兼容新旧字段
+                    let update_time = g["resource_update_time"].as_str()
+                        .or_else(|| g["resourceUpdateTime"].as_str())
+                        .or_else(|| g["release_date"].as_str())
                         .map(|s| s.split('T').next().unwrap_or("").to_string());
 
                     results.push(SearchResult {
