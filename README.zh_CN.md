@@ -19,7 +19,7 @@
 
 AsumiGal 是一款专为 macOS 设计的 galgame/视觉小说管理器，主要管理通过 CrossOver 与 Parallels Desktop 运行的游戏实例，并兼容原生 macOS APP，旨在补全 galgame 管理器在 macOS 平台的空白。
 
-目前更新至 0.4.0 版本，添加了 dry run 模式，重命名仓库并修改了仓库的架构。
+目前更新至 0.5.0 版本，更新了实例设置界面的布局，支持了对实例的筛选与状态标识等更多操作，并修复了之前的版本中存在的一些 bug。
 
 ## 下载与安装
 
