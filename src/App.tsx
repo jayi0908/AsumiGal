@@ -188,7 +188,10 @@ function AppContent() {
           game_exe: instance.executablePath,
           crossover_app_path: config.crossoverPath,
           run_mode: instance.runMode || 'crossover',
-          dry_run_active: isDryRun
+          dry_run_active: isDryRun,
+          command_args: instance.commandArgs || '',
+          env_vars: instance.envVars || '',
+          work_dir: instance.workDir || ''
         }
       });
       showToast(`${instance.name} 启动成功 (PID: ${response})`, "success");
@@ -220,7 +223,10 @@ function AppContent() {
           bottle_path: bottlePath,
           game_exe: instance.executablePath,
           crossover_app_path: config.crossoverPath,
-          run_mode: instance.runMode || 'crossover'
+          run_mode: instance.runMode || 'crossover',
+          command_args: instance.commandArgs || '',
+          env_vars: instance.envVars || '',
+          work_dir: instance.workDir || ''
         }
       });
 

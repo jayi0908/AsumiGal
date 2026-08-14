@@ -22,6 +22,9 @@ export interface GameInstance {
   diskGameRoot?: string;
   localGameRoot?: string;
   gameRelativeDir?: string;
+  commandArgs?: string;
+  envVars?: string;
+  workDir?: string;
 }
 
 interface SearchResult {
@@ -707,6 +710,26 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
 
             {formData.runMode === 'crossover' && (
             <>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="min-w-0">
+                  <label className="block text-sm font-medium mb-2 truncate">命令行参数</label>
+                  <input
+                    value={formData.commandArgs || ''}
+                    onChange={e => setFormData({ ...formData, commandArgs: e.target.value })}
+                    className="w-full bg-black/5 dark:bg-white/5 border border-black/10 dark:border-white/10 rounded-lg px-4 py-2 outline-none"
+                    placeholder="例如 --fullscreen --language=zh_CN"
+                  />
+                </div>
+                <div className="min-w-0">
+                  <label className="block text-sm font-medium mb-2 truncate">环境变量</label>
+                  <input
+                    value={formData.envVars || ''}
+                    onChange={e => setFormData({ ...formData, envVars: e.target.value })}
+                    className="w-full bg-black/5 dark:bg-white/5 border border-black/10 dark:border-white/10 rounded-lg px-4 py-2 outline-none"
+                    placeholder="例如 WINEDLLOVERRIDES=msvcr100=n,b"
+                  />
+                </div>
+              </div>
               <div className="grid grid-cols-2 gap-4">
                 <div className="min-w-0">
                   <label className="block text-sm font-medium mb-2 truncate">硬盘游戏根目录</label>

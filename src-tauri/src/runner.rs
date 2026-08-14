@@ -14,6 +14,9 @@ pub struct WineConfig {
     pub crossover_app_path: String,
     pub run_mode: Option<String>,
     pub dry_run_active: Option<bool>,
+    pub command_args: Option<String>,
+    pub env_vars: Option<String>,
+    pub work_dir: Option<String>,
 }
 
 #[derive(serde::Serialize, Clone)]
@@ -389,6 +392,59 @@ fn expand_tilde(path_str: &str) -> PathBuf {
     PathBuf::from(path_str)
 }
 
+// 将命令行参数字符串按 shell 规则拆分（支持单引号、双引号、转义），
+// 返回可直接传给子进程的参数列表
+fn shell_split(input: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+    let mut has_token = false;
+    let mut chars = input.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' if !in_double_quote => {
+                in_single_quote = !in_single_quote;
+                has_token = true;
+            }
+            '"' if !in_single_quote => {
+                in_double_quote = !in_double_quote;
+                has_token = true;
+            }
+            '\\' if !in_single_quote => {
+                match chars.peek() {
+                    Some(&next) if next == '"' || next == '\\' || next == '\'' || next.is_whitespace() => {
+                        current.push(next);
+                        chars.next();
+                    }
+                    _ => {
+                        // 其他字符（如 Windows 路径 C:\Program）保持反斜杠原样
+                        current.push('\\');
+                    }
+                }
+                has_token = true;
+            }
+            c if c.is_whitespace() && !in_single_quote && !in_double_quote => {
+                if has_token {
+                    args.push(std::mem::take(&mut current));
+                    has_token = false;
+                }
+            }
+            c => {
+                current.push(c);
+                has_token = true;
+            }
+        }
+    }
+
+    if has_token {
+        args.push(current);
+    }
+
+    args
+}
+
 #[command]
 pub fn get_crossover_bottles(path: String) -> Result<Vec<String>, String> {
     let bottles_path = expand_tilde(&path);
@@ -599,7 +655,7 @@ pub async fn launch_game(app: AppHandle, instance_id: String, config: WineConfig
         return Err(format!("找不到可执行文件，可能位于外接硬盘但未连接，请检查磁盘连接情况: {:?}", config.game_exe));
     }
 
-    // 1. 定位 CrossOver
+    // 定位 CrossOver
     let crossover_app_dir = expand_tilde(&config.crossover_app_path);
     let crossover_bin = crossover_app_dir.join("Contents/SharedSupport/CrossOver/bin/wine");
 
@@ -607,22 +663,54 @@ pub async fn launch_game(app: AppHandle, instance_id: String, config: WineConfig
         return Err(format!("未找到 CrossOver 核心文件，请检查设置路径: {:?}", crossover_bin));
     }
 
-    // 2. 解析容器名
+    // 解析容器名
     let bottle_path_buf = expand_tilde(&config.bottle_path);
     let bottle_name = bottle_path_buf
         .file_name()
         .and_then(|n| n.to_str())
         .ok_or("无法解析容器名称")?;
 
-    // 3. 构建命令
+    // 构建命令
     let mut cmd = Command::new(&crossover_bin);
     cmd.env("CX_BOTTLE", bottle_name);
     cmd.env("WINEPREFIX", &bottle_path_buf);
     cmd.env("LC_ALL", "zh_CN.UTF-8");
     cmd.env("WINEDEBUG", "-all");
+
+    // 附加环境变量（支持空格或换行分隔的 KEY=VALUE 形式）
+    if let Some(env_vars) = &config.env_vars {
+        let parsed = if env_vars.contains('\n') {
+            env_vars.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(" ")
+        } else {
+            env_vars.clone()
+        };
+        for kv in shell_split(&parsed) {
+            if let Some((k, v)) = kv.split_once('=') {
+                cmd.env(k.trim(), v.trim());
+            }
+        }
+    }
+
+    // 工作目录：优先用户指定，否则默认使用可执行文件所在目录
+    // （与 CrossOver「运行程序」行为一致，确保依赖相对路径的汉化补丁与资源能被正确加载）
+    let work_dir = match config.work_dir.as_ref() {
+        Some(wd) if !wd.trim().is_empty() => Some(wd.trim().to_string()),
+        _ => game_path.parent().map(|p| p.to_string_lossy().into_owned()),
+    };
+    if let Some(wd) = work_dir {
+        cmd.arg("--workdir").arg(wd);
+    }
+
     cmd.arg(&game_path);
 
-    // 4. 启动子进程
+    // 命令行参数透传给 Windows 应用
+    if let Some(args_str) = &config.command_args {
+        for arg in shell_split(args_str) {
+            cmd.arg(arg);
+        }
+    }
+
+    // 启动子进程
     let mut child = cmd.spawn().map_err(|e| format!("启动失败: {}", e))?;
     let pid = child.id();
     let exe_for_track = game_path.to_string_lossy().to_string();
