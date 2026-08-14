@@ -1,6 +1,25 @@
 
 
 
+## [0.5](https://github.com/jayi0908/AsumiGal/compare/v0.4.0...v0.5) (2026-08-14)
+
+### ⚙️ Miscellaneous Tasks
+
+- Update CHANGELOG.md for v0.4.0 ([b347866](https://github.com/jayi0908/AsumiGal/commit/b3478664f8b2bb5d216c5cc9ef3836746a1a4530))
+- Release v0.5.0 ([581f5c5](https://github.com/jayi0908/AsumiGal/commit/581f5c5b30e7d233f0e81a81c2245c4bf11aa7d1))
+
+### ✨ Features
+
+- Add command line arguments, environment variables, and working directory support for game instances ([b60bfc2](https://github.com/jayi0908/AsumiGal/commit/b60bfc209d37ffa82ce9befce70830de81bb0079))
+- Modify the layout of instance setting page with different views, sorting conditions and status flag, improve displaying of contextual hints. ([29da0c7](https://github.com/jayi0908/AsumiGal/commit/29da0c7a8762b1c8724861aaac7db4de54833485))
+
+### 🐛 Bug Fixes
+
+- Update API URLs and fix the bottle selection logic in Instances and Settings pages ([a4a0875](https://github.com/jayi0908/AsumiGal/commit/a4a08750339c2bb2cf4a70c61ceb9be141f96fc2))
+
+
+
+
 ## [0.4.0](https://github.com/jayi0908/AsumiGal/compare/v0.3.0...v0.4.0) (2026-07-18)
 
 ### ⚙️ Miscellaneous Tasks
