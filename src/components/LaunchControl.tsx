@@ -3,6 +3,7 @@ import { Settings, ArrowLeftRight, Play, Box, History, Clock, Square } from "luc
 import { motion, AnimatePresence } from "framer-motion";
 import { clsx } from "clsx";
 import { GameInstance } from "./InstancesPage";
+import { Tooltip } from "./Tooltip";
 import { useTheme } from "../contexts/ThemeContext";
 
 interface LaunchControlProps {
@@ -94,18 +95,18 @@ export function LaunchControl({ instances, onLaunch, onGoToSettings, onStop, dry
 
         <div className="flex items-end gap-3">
           {/* 今日游玩时长 */}
-          <button
-            onClick={() => currentInstance && onToggleDryRun(currentInstance.id)}
-            title={dryRunActive && dryRunInstanceId === currentInstance?.id ? "关闭 dry run" : "开启 dry run"}
-            className={clsx(
-              "relative h-20 rounded-2xl flex flex-col items-center justify-center px-6 transition-all border backdrop-blur-md overflow-hidden min-w-[100px] cursor-pointer group",
-              dryRunActive && dryRunInstanceId === currentInstance?.id
-                ? (isDark ? "bg-black/60 border-green-500/30 shadow-lg shadow-green-500/10" : "bg-white/80 border-green-500/40 shadow-xl ring-1 ring-green-500/10")
-                : (isDark
-                  ? "bg-black/60 border-white/10 shadow-lg group-hover:border-blue-500/30 group-hover:shadow-blue-500/5"
-                  : "bg-white/80 border-white/60 shadow-xl ring-1 ring-black/5 group-hover:border-blue-500/30")
-            )}
-          >
+          <Tooltip label={dryRunActive && dryRunInstanceId === currentInstance?.id ? "关闭 dry run" : "开启 dry run"} position="top">
+            <button
+              onClick={() => currentInstance && onToggleDryRun(currentInstance.id)}
+              className={clsx(
+                "relative h-20 rounded-2xl flex flex-col items-center justify-center px-6 transition-all border backdrop-blur-md overflow-hidden min-w-[100px] cursor-pointer group",
+                dryRunActive && dryRunInstanceId === currentInstance?.id
+                  ? (isDark ? "bg-black/60 border-green-500/30 shadow-lg shadow-green-500/10" : "bg-white/80 border-green-500/40 shadow-xl ring-1 ring-green-500/10")
+                  : (isDark
+                    ? "bg-black/60 border-white/10 shadow-lg group-hover:border-blue-500/30 group-hover:shadow-blue-500/5"
+                    : "bg-white/80 border-white/60 shadow-xl ring-1 ring-black/5 group-hover:border-blue-500/30")
+              )}
+            >
             <div className={clsx(
               "absolute inset-x-0 bottom-0 h-full bg-gradient-to-t opacity-0 group-hover:opacity-100 transition-opacity duration-500",
               dryRunActive && dryRunInstanceId === currentInstance?.id
@@ -135,6 +136,7 @@ export function LaunchControl({ instances, onLaunch, onGoToSettings, onStop, dry
                 : "bg-blue-500/50"
             )} />
           </button>
+          </Tooltip>
 
           {/* 启动按钮组容器 */}
           <div className="relative group">
@@ -191,9 +193,9 @@ export function LaunchControl({ instances, onLaunch, onGoToSettings, onStop, dry
               </button>
 
               <div className="absolute top-2 right-2 flex gap-1 bg-black/20 backdrop-blur rounded-lg p-0.5 border border-white/5 transition-opacity duration-200">
-                  <ToolBtn icon={<Settings size={12} />} onClick={handleOpenCurrentSettings} />
-                  <ToolBtn icon={<ArrowLeftRight size={12} />} onClick={() => setIsOpen(!isOpen)} active={isOpen} />
-                  <ToolBtn icon={<Square size={12} />} onClick={handleStopInstance} />
+                  <ToolBtn label="打开实例设置" icon={<Settings size={12} />} onClick={handleOpenCurrentSettings} />
+                  <ToolBtn label="切换游戏实例" icon={<ArrowLeftRight size={12} />} onClick={() => setIsOpen(!isOpen)} active={isOpen} />
+                  <ToolBtn label="终止当前实例" icon={<Square size={12} />} onClick={handleStopInstance} />
               </div>
             </div>
           </div>
@@ -202,16 +204,18 @@ export function LaunchControl({ instances, onLaunch, onGoToSettings, onStop, dry
   );
 }
 
-function ToolBtn({ icon, onClick, active }: { icon: any; onClick: () => void; active?: boolean }) {
+function ToolBtn({ label, icon, onClick, active }: { label: string; icon: any; onClick: () => void; active?: boolean }) {
   return (
-    <button
-      onClick={(e) => { e.stopPropagation(); onClick(); }}
-      className={clsx(
-        "w-6 h-6 rounded flex items-center justify-center transition-all",
-        active ? "bg-indigo-500 text-white shadow-sm" : "text-white/40 hover:text-white hover:bg-white/10"
-      )}
-    >
-      {icon}
-    </button>
+    <Tooltip label={label} position="top">
+      <button
+        onClick={(e) => { e.stopPropagation(); onClick(); }}
+        className={clsx(
+          "w-6 h-6 rounded flex items-center justify-center transition-all",
+          active ? "bg-indigo-500 text-white shadow-sm" : "text-white/40 hover:text-white hover:bg-white/10"
+        )}
+      >
+        {icon}
+      </button>
+    </Tooltip>
   );
 }
