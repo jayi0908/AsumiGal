@@ -1,0 +1,79 @@
+/* Derived from SJMCL (https://github.com/UNiKEEN/SJMCL), GPL-3.0. */
+.tabList {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 2px;
+  gap: 3px;
+  isolation: isolate;
+}
+
+.indicator {
+  position: absolute;
+  left: 0;
+  top: 2px;
+  bottom: 2px;
+  width: 0;
+  border-radius: 9999px;
+  pointer-events: none;
+  border: 1px solid var(--head-nav-indicator-border);
+  background: var(--head-nav-indicator-bg);
+  opacity: 0;
+  transition:
+    transform 360ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    width 360ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    opacity 120ms ease,
+    background-color 200ms ease,
+    border-color 200ms ease;
+}
+
+.indicatorVisible {
+  opacity: 1;
+}
+
+.tabButton {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  height: 24px;
+  padding: 0 14px;
+  font-size: 13px;
+  line-height: 1;
+  border-radius: 9999px;
+  transition:
+    color 200ms ease,
+    background-color 180ms ease;
+}
+
+.tabContent {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  line-height: 1;
+  white-space: nowrap;
+  gap: 6px;
+}
+
+.tabIcon {
+  display: block;
+  flex: 0 0 auto;
+}
+
+.tabButton:hover {
+  background: var(--head-nav-hover-bg);
+}
+
+.tabButton[aria-selected="true"] {
+  background: transparent;
+}
+
+:global(.dark) .tabList {
+  --head-nav-hover-bg: rgba(255, 255, 255, 0.08);
+}
+
+:global(.dark) .tabButton[aria-selected="true"] {
+  text-shadow: 0 0 0.35px currentColor;
+}

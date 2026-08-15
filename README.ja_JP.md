@@ -71,4 +71,4 @@ pnpm tauri build
 
 ## ライセンス
 
-本プロジェクトは [MIT](./LICENSE) ライセンスの下で公開されています。
+本プロジェクトは [GNU General Public License v3.0](./LICENSE) ライセンスの下で公開されています。

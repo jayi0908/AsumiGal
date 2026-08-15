@@ -4,6 +4,7 @@ import { Monitor, Sun, Moon, Type, Image as ImageIcon, FolderOpen, Layout, Cog, 
 import { open } from "@tauri-apps/plugin-dialog";
 import { open as openUrl } from "@tauri-apps/plugin-shell";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
+import { SidebarNavItem } from "./SidebarNavItem";
 import { clsx } from "clsx";
 
 type SettingTab = "general" | "global" | "appearance" | "about";
@@ -88,10 +89,10 @@ export function SettingsPage() {
   // --- 样式定义 ---
   const isDark = currentTheme === 'dark';
   const cardClass = clsx(
-    "border rounded-xl p-6 space-y-4 transition-all backdrop-blur-md",
-    isDark ? "bg-black/40 border-white/5 shadow-inner" : "bg-white/70 border-black/5 shadow-sm"
+    "border rounded-xl p-6 space-y-4 transition-all",
+    isDark ? "bg-[#2E2E2E] border-white/10 shadow-inner" : "bg-[#FAFAFA] border-black/5 shadow-sm"
   );
-  const headingClass = clsx("text-3xl font-bold mb-6", isDark ? "text-white" : "text-gray-900");
+  const headingClass = clsx("text-2xl font-bold tracking-tight", isDark ? "text-white" : "text-gray-900");
   const subHeadingClass = clsx("font-semibold text-lg flex items-center gap-2", isDark ? "text-white/90" : "text-gray-800");
   const inputClass = clsx(
     "w-full rounded-lg px-3 py-2 text-sm outline-none transition-colors border appearance-none",
@@ -102,21 +103,20 @@ export function SettingsPage() {
   const labelClass = clsx("text-sm font-medium", isDark ? "text-white/60" : "text-gray-600");
 
   return (
-    <div className="flex h-full w-full pt-20 px-8 gap-8 animate-in fade-in zoom-in duration-300">
-      
-      {/* 左侧导航 */}
-      <div className="w-48 flex-shrink-0 flex flex-col gap-2">
-        <h2 className={clsx("text-xl font-bold mb-4 px-2", isDark ? "text-white" : "text-gray-800")}>
-          设置
-        </h2>
-        <SidebarItem active={activeTab === 'general'} icon={<Sliders size={18}/>} label="通用" onClick={() => setActiveTab('general')} isDark={isDark} />
-        <SidebarItem active={activeTab === 'global'} icon={<Cog size={18}/>} label="全局游戏设置" onClick={() => setActiveTab('global')} isDark={isDark} />
-        <SidebarItem active={activeTab === 'appearance'} icon={<Layout size={18}/>} label="外观" onClick={() => setActiveTab('appearance')} isDark={isDark} />
-        <SidebarItem active={activeTab === 'about'} icon={<Info size={18}/>} label="关于" onClick={() => setActiveTab('about')} isDark={isDark} />
-      </div>
+    <div className="h-full flex relative">
+      {/* ===== 左侧导航 ===== */}
+      <aside className="w-1/4 min-w-[220px] max-w-[320px] flex flex-col shrink-0 border-r border-black/10 dark:border-white/10 rounded-2xl overflow-hidden my-3 ml-3">
+        <div className="flex-1 overflow-y-auto custom-scrollbar p-3 space-y-1">
+          <SidebarNavItem active={activeTab === 'general'} icon={<Sliders size={18} className="text-indigo-500 shrink-0" />} label="通用" onClick={() => setActiveTab('general')} />
+          <SidebarNavItem active={activeTab === 'global'} icon={<Cog size={18} className="text-indigo-500 shrink-0" />} label="全局游戏设置" onClick={() => setActiveTab('global')} />
+          <SidebarNavItem active={activeTab === 'appearance'} icon={<Layout size={18} className="text-indigo-500 shrink-0" />} label="外观" onClick={() => setActiveTab('appearance')} />
+          <SidebarNavItem active={activeTab === 'about'} icon={<Info size={18} className="text-indigo-500 shrink-0" />} label="关于" onClick={() => setActiveTab('about')} />
+        </div>
+      </aside>
 
-      {/* 右侧内容 */}
-      <div className="flex-1 h-full overflow-y-auto custom-scrollbar pb-20 pr-4">
+      {/* ===== 右侧内容 ===== */}
+      <main className="flex-1 h-full min-w-0 relative flex flex-col">
+        <div className="flex-1 overflow-y-auto custom-scrollbar px-8 py-8">
 
         {/* 通用设置 */}
         {activeTab === 'general' && (
@@ -425,32 +425,23 @@ export function SettingsPage() {
                   <li>• CrossOver / Wine - 强大的 Windows 兼容层</li>
                </ul>
             </div>
-          </div>
-        )}
-      </div>
+
+            {/* 许可证 */}
+            <div className={cardClass}>
+               <h3 className={subHeadingClass}>许可证</h3>
+               <p className={clsx("text-sm leading-relaxed", isDark ? "text-white/70" : "text-gray-600")}>
+                  AsumiGal 采用 <a href="https://www.gnu.org/licenses/gpl-3.0.html" className="text-indigo-500 hover:underline">GPL-3.0</a> 许可证发布。
+               </p>
+               <p className={clsx("text-sm leading-relaxed", isDark ? "text-white/50" : "text-gray-500")}>
+                  前端布局（尤其是液态玻璃效果）借鉴自{" "}
+                  <a href="https://github.com/UNIkeEN/SJMCL" className="text-indigo-500 hover:underline">SJMCL</a>
+                  ，其采用 GPL-3.0 许可证。
+               </p>
+             </div>
+           </div>
+         )}
+        </div>
+      </main>
     </div>
   );
-}
-
-function SidebarItem({ active, icon, label, onClick, isDark }: { active: boolean, icon: any, label: string, onClick: () => void, isDark: boolean }) {
-    return (
-        <button
-          onClick={onClick}
-          className={clsx(
-            "flex items-center gap-3 px-4 py-3 rounded-xl font-medium transition-all text-sm w-full text-left",
-            active 
-              ? (isDark 
-                  ? "bg-white/10 text-white shadow-[0_0_15px_rgba(255,255,255,0.1)]" // 深色选中：微发光
-                  : "bg-white text-indigo-600 shadow-md ring-1 ring-black/5"       // 浅色选中：纯白卡片+蓝字
-                )
-              : (isDark 
-                  ? "text-white/50 hover:text-white hover:bg-white/5" 
-                  : "text-gray-500 hover:text-gray-900 hover:bg-gray-100"
-                )
-          )}
-        >
-          {icon}
-          {label}
-        </button>
-    )
 }

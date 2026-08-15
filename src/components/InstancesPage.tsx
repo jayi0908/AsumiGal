@@ -8,6 +8,7 @@ import { useToast } from "./ToastProvider";
 import { DeleteModal } from "./DeleteModal";
 import { useTheme } from "../contexts/ThemeContext";
 import { Tooltip } from "./Tooltip";
+import { SidebarNavItem } from "./SidebarNavItem";
 import clsx from "clsx";
 
 export interface GameInstance {
@@ -746,40 +747,29 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
   };
 
   return (
-    <div className="h-full flex relative pt-20">
+    <div className="h-full flex relative">
       {/* ===== 左侧侧边栏 ===== */}
-      <aside className="w-1/4 min-w-[220px] max-w-[320px] flex flex-col shrink-0 border-r border-black/10 dark:border-white/10 bg-black/20 dark:bg-black/30 backdrop-blur-md rounded-t-2xl overflow-hidden mt-6">
+      <aside className="w-1/4 min-w-[220px] max-w-[320px] flex flex-col shrink-0 border-r border-black/10 dark:border-white/10 rounded-2xl overflow-hidden my-3 ml-3">
         <div className="flex-1 overflow-y-auto custom-scrollbar p-3 space-y-1">
-          <button
+          <SidebarNavItem
+            active={!isEditing}
+            icon={<Boxes size={18} className="text-indigo-500 shrink-0" />}
+            label="全部实例"
             onClick={handleGoBack}
-            className={clsx(
-              "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-sm font-medium transition-all text-left",
-              !isEditing
-                ? "bg-white dark:bg-white/10 text-indigo-600 dark:text-white shadow-md ring-1 ring-black/5 dark:ring-white/10"
-                : "text-gray-600 dark:text-white/60 hover:bg-black/5 dark:hover:bg-white/5"
-            )}
           >
-            <Boxes size={18} className="text-indigo-500 shrink-0" />
-            <span className="truncate">全部实例</span>
             {!isEditing && <span className="ml-auto text-xs px-1.5 py-0.5 rounded-full bg-black/5 dark:bg-white/10 text-gray-500 dark:text-white/50 shrink-0">{instances.length}</span>}
-          </button>
+          </SidebarNavItem>
 
           <div className="h-px bg-black/10 dark:bg-white/10 mx-2" />
 
           {instances.map(inst => (
-            <button
+            <SidebarNavItem
               key={inst.id}
+              active={selectedId === inst.id}
+              icon={<span className="shrink-0">{getSidebarIcon(inst)}</span>}
+              label={inst.name}
               onClick={() => openDetail(inst)}
-              className={clsx(
-                "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-sm font-medium transition-all text-left",
-                selectedId === inst.id
-                  ? "bg-white dark:bg-white/10 text-indigo-600 dark:text-white shadow-md ring-1 ring-black/5 dark:ring-white/10"
-                  : "text-gray-600 dark:text-white/60 hover:bg-black/5 dark:hover:bg-white/5"
-              )}
-            >
-              <span className="shrink-0">{getSidebarIcon(inst)}</span>
-              <span className="truncate">{inst.name}</span>
-            </button>
+            />
           ))}
         </div>
 
@@ -1147,7 +1137,7 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
           /* ---------- 全部实例总览 ---------- */
           <>
             {/* 标题栏 */}
-            <div className="p-6 pb-2 flex justify-between items-center shrink-0 flex-wrap gap-3">
+            <div className="px-8 pt-8 pb-4 flex justify-between items-center shrink-0 flex-wrap gap-3">
               <h1 className="text-2xl font-bold tracking-tight">全部实例</h1>
               <div className="flex items-center gap-2">
                 {/* 排序 */}
@@ -1239,7 +1229,7 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
             </div>
 
             {/* 实例列表 */}
-            <div ref={cardsContainerRef} className="flex-1 overflow-y-auto p-6 pt-4 custom-scrollbar min-h-0">
+            <div ref={cardsContainerRef} className="flex-1 overflow-y-auto px-8 pb-8 custom-scrollbar min-h-0">
               {instances.length === 0 ? (
                 <div className="h-full flex flex-col items-center justify-center text-gray-500">
                   <Box size={64} className="mb-4 opacity-20" />
@@ -1251,22 +1241,25 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
                   <p>没有符合当前筛选条件的实例</p>
                 </div>
               ) : viewMode === 'list' ? (
-                /* ----- 列表视图 ----- */
-                <div className="space-y-2">
+                /* ----- 列表视图 (参考 SJMCL: 灰色整体 + 细线分隔) ----- */
+                <div className="rounded-xl overflow-hidden bg-[#FAFAFA] dark:bg-[#2E2E2E] border border-black/5 dark:border-white/10 divide-y divide-black/5 dark:divide-white/10">
                   {filteredSorted.map(inst => (
-                    <div key={inst.id} data-instance-id={inst.id} className="flex items-center gap-4 p-3 rounded-xl bg-white dark:bg-[#252525] border border-black/5 dark:border-white/5 shadow-sm hover:shadow-lg transition-all duration-300">
+                    <div key={inst.id} data-instance-id={inst.id} className={clsx(
+                      "flex items-center gap-4 px-4 py-3 transition-colors",
+                      effectiveListSelection?.id === inst.id
+                        ? "bg-black/5 dark:bg-white/10"
+                        : "hover:bg-black/5 dark:hover:bg-white/5"
+                    )}>
                       {/* 单选圆形选择框 */}
-                      <Tooltip label="选择该实例">
-                        <button
-                          onClick={() => setListSelectedId(inst.id)}
-                          className={clsx(
-                            "w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 transition-colors",
-                            effectiveListSelection?.id === inst.id ? "border-blue-500" : "border-gray-300 dark:border-gray-600 hover:border-blue-400"
-                          )}
-                        >
-                          {effectiveListSelection?.id === inst.id && <div className="w-3 h-3 rounded-full bg-blue-500" />}
-                        </button>
-                      </Tooltip>
+                      <button
+                        onClick={() => setListSelectedId(inst.id)}
+                        className={clsx(
+                          "w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 transition-colors",
+                          effectiveListSelection?.id === inst.id ? "border-blue-500" : "border-gray-300 dark:border-gray-600 hover:border-blue-400"
+                        )}
+                      >
+                        {effectiveListSelection?.id === inst.id && <div className="w-3 h-3 rounded-full bg-blue-500" />}
+                      </button>
 
                       {/* 中间信息 */}
                       <div className="flex-1 min-w-0">

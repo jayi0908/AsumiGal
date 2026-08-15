@@ -5,6 +5,7 @@ import { clsx } from "clsx";
 import { GameInstance } from "./InstancesPage";
 import { Tooltip } from "./Tooltip";
 import { useTheme } from "../contexts/ThemeContext";
+import liquidGlassStyles from "../styles/liquid-glass.module.css";
 
 interface LaunchControlProps {
   instances: GameInstance[];
@@ -99,38 +100,43 @@ export function LaunchControl({ instances, onLaunch, onGoToSettings, onStop, dry
             <button
               onClick={() => currentInstance && onToggleDryRun(currentInstance.id)}
               className={clsx(
-                "relative h-20 rounded-2xl flex flex-col items-center justify-center px-6 transition-all border backdrop-blur-md overflow-hidden min-w-[100px] cursor-pointer group",
+                "h-20 rounded-2xl flex flex-col items-center justify-center px-6 transition-all border overflow-hidden min-w-[100px] cursor-pointer group",
+                liquidGlassStyles["wrapper"],
                 dryRunActive && dryRunInstanceId === currentInstance?.id
-                  ? (isDark ? "bg-black/60 border-green-500/30 shadow-lg shadow-green-500/10" : "bg-white/80 border-green-500/40 shadow-xl ring-1 ring-green-500/10")
+                  ? (isDark ? "border-green-500/30 shadow-lg shadow-green-500/10" : "border-green-500/40 shadow-xl ring-1 ring-green-500/10")
                   : (isDark
-                    ? "bg-black/60 border-white/10 shadow-lg group-hover:border-blue-500/30 group-hover:shadow-blue-500/5"
-                    : "bg-white/80 border-white/60 shadow-xl ring-1 ring-black/5 group-hover:border-blue-500/30")
+                    ? "border-white/10 shadow-lg group-hover:border-blue-500/30 group-hover:shadow-blue-500/5"
+                    : "border-white/60 shadow-xl ring-1 ring-black/5 group-hover:border-blue-500/30")
               )}
             >
+            <div className={liquidGlassStyles["effect"]} />
+            <div className={liquidGlassStyles["shine"]} />
             <div className={clsx(
-              "absolute inset-x-0 bottom-0 h-full bg-gradient-to-t opacity-0 group-hover:opacity-100 transition-opacity duration-500",
+              "absolute inset-x-0 bottom-0 h-full bg-gradient-to-t opacity-0 group-hover:opacity-100 transition-opacity duration-500 z-[3]",
               dryRunActive && dryRunInstanceId === currentInstance?.id
                 ? "from-green-600/20 to-transparent"
                 : "from-blue-600/20 to-transparent"
             )} />
-            <span className={clsx("text-xs font-bold uppercase tracking-wider mb-1", isDark ? "text-white/50" : "text-gray-500")}>今日游玩</span>
-            <div className="flex items-center gap-2">
-               <Clock size={16} className={clsx(
-                 dryRunActive && dryRunInstanceId === currentInstance?.id
-                   ? "text-green-500 animate-pulse"
-                   : "text-blue-500"
-               )} />
-               <span className={clsx(
-                 "text-xl font-bold font-mono",
-                 dryRunActive && dryRunInstanceId === currentInstance?.id
-                   ? (isDark ? "text-green-400" : "text-green-600")
-                   : (isDark ? "text-blue-400" : "text-blue-600")
-               )}>
-                   {formatTime(getDailyTime(currentInstance))}
-               </span>
+            <div className="relative z-[3] flex flex-col items-center justify-center">
+              <span className={clsx("text-xs font-bold uppercase tracking-wider mb-1", isDark ? "text-white/50" : "text-gray-500")}>今日游玩</span>
+              <div className="flex items-center gap-2">
+                 <Clock size={16} className={clsx(
+                   dryRunActive && dryRunInstanceId === currentInstance?.id
+                     ? "text-green-500 animate-pulse"
+                     : "text-blue-500"
+                 )} />
+                 <span className={clsx(
+                   "text-xl font-bold font-mono",
+                   dryRunActive && dryRunInstanceId === currentInstance?.id
+                     ? (isDark ? "text-green-400" : "text-green-600")
+                     : (isDark ? "text-blue-400" : "text-blue-600")
+                 )}>
+                     {formatTime(getDailyTime(currentInstance))}
+                 </span>
+              </div>
             </div>
             <div className={clsx(
-              "absolute inset-x-0 bottom-0 h-1 transition-colors duration-300",
+              "absolute inset-x-0 bottom-0 h-1 transition-colors duration-300 z-[3]",
               dryRunActive && dryRunInstanceId === currentInstance?.id
                 ? "bg-green-500/50"
                 : "bg-blue-500/50"
@@ -176,23 +182,31 @@ export function LaunchControl({ instances, onLaunch, onGoToSettings, onStop, dry
             <div className="relative group">
               <button
                 onClick={() => currentInstance && onLaunch(currentInstance)}
-                className="relative w-56 h-20 bg-black/60 backdrop-blur-md rounded-2xl overflow-hidden border border-white/10 group-hover:border-indigo-500/50 transition-all duration-300 shadow-xl"
+                className={clsx(
+                  "w-56 h-20 overflow-hidden border transition-all duration-300 cursor-pointer group",
+                  liquidGlassStyles["wrapper"],
+                  isDark
+                    ? "border-white/10 group-hover:border-indigo-500/50 shadow-lg"
+                    : "border-white/60 group-hover:border-indigo-500/40 shadow-xl ring-1 ring-black/5"
+                )}
               >
-                  <div className="absolute inset-x-0 bottom-0 h-full bg-gradient-to-t from-indigo-600/20 to-transparent opacity-50 group-hover:opacity-100 transition-opacity duration-500" />
-                  <div className="absolute inset-0 flex items-center pl-6 pr-16">
+                  <div className={liquidGlassStyles["effect"]} />
+                  <div className={liquidGlassStyles["shine"]} />
+                  <div className="absolute inset-x-0 bottom-0 h-full bg-gradient-to-t from-indigo-600/20 to-transparent opacity-50 group-hover:opacity-100 transition-opacity duration-500 z-[3]" />
+                  <div className="absolute inset-0 flex items-center pl-6 pr-16 z-[3]">
                       <div className="flex flex-col items-start text-left w-full">
-                          <div className="text-xl font-bold text-white tracking-wide truncate w-full">启动游戏</div>
+                          <div className="text-xl font-bold tracking-wide truncate w-full text-white">启动游戏</div>
                           <div className="text-xs text-indigo-200/70 font-medium mt-1 truncate w-full">
                               {currentInstance ? currentInstance.name : "无实例"}
                           </div>
                       </div>
                   </div>
-                  <div className="absolute right-4 bottom-4">
+                  <div className="absolute right-4 bottom-4 z-[3]">
                      <Play fill="currentColor" className="w-6 h-6 text-white group-hover:scale-110 transition-all" />
                   </div>
               </button>
 
-              <div className="absolute top-2 right-2 flex gap-1 bg-black/20 backdrop-blur rounded-lg p-0.5 border border-white/5 transition-opacity duration-200">
+              <div className="absolute top-2 right-2 flex gap-1 bg-black/20 backdrop-blur rounded-lg p-0.5 border border-white/5 transition-opacity duration-200 z-[5]">
                   <ToolBtn label="打开实例设置" icon={<Settings size={12} />} onClick={handleOpenCurrentSettings} />
                   <ToolBtn label="切换游戏实例" icon={<ArrowLeftRight size={12} />} onClick={() => setIsOpen(!isOpen)} active={isOpen} />
                   <ToolBtn label="终止当前实例" icon={<Square size={12} />} onClick={handleStopInstance} />

@@ -1,0 +1,19 @@
+.animatedCard {
+  transition: transform 0.7s cubic-bezier(0.25, 0.1, 0.25, 1);
+}
+
+.animatedCard.animate {
+  animation: smoothScale 0.7s cubic-bezier(0.25, 0.1, 0.25, 1);
+}
+
+@keyframes smoothScale {
+  0% {
+    transform: scaleX(0.95);
+  }
+  50% {
+    transform: scaleX(1.05);
+  }
+  100% {
+    transform: scaleX(1);
+  }
+}

@@ -268,7 +268,7 @@ function AppContent() {
     >
       {/* Home 页内容 */}
       {activeTab === "home" && (
-        <div className="max-w-2xl mt-40 px-10 animate-in slide-in-from-left-10 fade-in duration-500">
+        <div className="max-w-2xl mt-24 px-10 animate-in slide-in-from-left-10 fade-in duration-500">
           <h3 className="text-3xl font-bold text-white mb-4 drop-shadow-lg">
             {/* {currentDisplayInstance?.name || */"Ciallo~ (∠・ω< )⌒★"}
           </h3>
