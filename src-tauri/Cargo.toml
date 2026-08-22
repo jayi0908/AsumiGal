@@ -38,3 +38,4 @@ tauri-plugin-dialog = "2"
 tauri-plugin-http = { version = "2", features = ["unsafe-headers"] }
 font-kit = "0.14.3"
 urlencoding = "2"
+base64 = "0.22"

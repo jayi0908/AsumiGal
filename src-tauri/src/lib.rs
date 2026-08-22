@@ -1,10 +1,12 @@
-use tauri::{command, Manager};
+use tauri::{command, Manager, WebviewUrl, WebviewWindowBuilder};
 use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial};
 use font_kit::source::SystemSource;
 use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::fs;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 mod runner;
 mod storage;
@@ -18,6 +20,10 @@ struct SearchResult {
     source: String,
     url: String,
     date: Option<String>,
+    #[serde(rename = "averageRating", skip_serializing_if = "Option::is_none")]
+    average_rating: Option<f64>,
+    #[serde(rename = "view", skip_serializing_if = "Option::is_none")]
+    view: Option<i64>,
 }
 
 // --- TouchGal 辅助结构 ---
@@ -191,7 +197,9 @@ async fn search_game(keyword: String, source: String) -> Result<Vec<SearchResult
                         cover: banner,
                         source: "TouchGal".to_string(),
                         url: format!("https://www.touchgal.ink/{}", unique_id),
-                        date: None
+                        date: None,
+                        average_rating: None,
+                        view: None
                     });
                 }
             } else {
@@ -265,6 +273,8 @@ async fn search_game(keyword: String, source: String) -> Result<Vec<SearchResult
                         source: "KunGal".to_string(),
                         url: format!("https://www.kungal.com/galgame/{}", id),
                         date: update_time,
+                        average_rating: None,
+                        view: None,
                     });
                 }
             } else {
@@ -275,6 +285,250 @@ async fn search_game(keyword: String, source: String) -> Result<Vec<SearchResult
     }
 
     println!("=== 搜索结束，找到 {} 条结果 ===\n", results.len());
+    Ok(results)
+}
+
+// --- TouchGal 搜索（绕过 Cloudflare：通过隐藏 WebView 同源 fetch） ---
+#[derive(Default)]
+struct TouchGalState(Arc<Mutex<Option<String>>>);
+
+#[command]
+async fn touchgal_search(app: tauri::AppHandle, keyword: String, page: Option<u32>) -> Result<Vec<SearchResult>, String> {
+    let page = page.unwrap_or(1);
+    println!("\n=== TouchGal 搜索: {} (page {}) ===", keyword, page);
+
+    let window_label = "touchgal-bridge";
+    let search_url = "https://www.touchgal.ink/search";
+
+    // 获取共享结果 state（用于接收 document.title 变化）
+    let state = {
+        let s = app.state::<TouchGalState>();
+        s.0.clone()
+    };
+
+    // 1. 获取或创建隐藏桥接窗口（必须主线程创建）
+    let bridge = match app.get_webview_window(window_label) {
+        Some(w) => w,
+        None => {
+            let (tx, rx) = std::sync::mpsc::channel::<Result<tauri::WebviewWindow, String>>();
+            let app2 = app.clone();
+            let state2 = state.clone();
+            app.run_on_main_thread(move || {
+                let res = WebviewWindowBuilder::new(
+                    &app2,
+                    window_label,
+                    WebviewUrl::External(search_url.parse().unwrap()),
+                )
+                .title("touchgal")
+                .visible(false)
+                .on_document_title_changed(move |_webview, title| {
+                    if title.starts_with("__TG_") {
+                        *state2.lock().unwrap() = Some(title);
+                    }
+                })
+                .build();
+                let _ = tx.send(res.map_err(|e| e.to_string()));
+            })
+            .map_err(|e| format!("主线程调度失败: {}", e))?;
+            match rx.recv_timeout(Duration::from_secs(5)) {
+                Ok(Ok(w)) => w,
+                Ok(Err(e)) => return Err(format!("创建 TouchGal 桥接窗口失败: {}", e)),
+                Err(_) => return Err("创建 TouchGal 桥接窗口超时".to_string()),
+            }
+        }
+    };
+
+    // 2. 确保窗口已导航到 touchgal 页面（若在 challenge/其他页面则重新导航）
+    let cur_url = bridge.url().map(|u| u.to_string()).unwrap_or_default();
+    if !cur_url.contains("touchgal.ink") {
+        let _ = bridge.navigate(search_url.parse().unwrap());
+    }
+
+    // 3. 构造请求体（与 touchgal.jsonl 中一致）
+    let query_string_json = json!([
+        { "type": "keyword", "mode": "include", "name": keyword }
+    ]).to_string();
+
+    let body = TouchGalRequestBody {
+        queryString: query_string_json,
+        limit: 12,
+        searchOption: TouchGalSearchOption {
+            searchInIntroduction: false,
+            searchInAlias: true,
+            searchInTag: false,
+        },
+        page: page as i32,
+        selectedType: "all".to_string(),
+        selectedLanguage: "all".to_string(),
+        selectedPlatform: "all".to_string(),
+        sortField: "resource_update_time".to_string(),
+        sortOrder: "desc".to_string(),
+        selectedYears: vec!["all".to_string()],
+        selectedMonths: vec!["all".to_string()],
+    };
+    let body_json = serde_json::to_string(&body).map_err(|e| format!("序列化失败: {}", e))?;
+
+    // 4. 注入同源 fetch 脚本，结果存入 localStorage 并标记就绪
+    let js = format!(
+        r#"(function() {{
+            fetch('/api/search', {{
+                method: 'POST',
+                headers: {{
+                    'Content-Type': 'text/plain;charset=UTF-8',
+                    'X-Requested-With': 'kun-fetch',
+                    'Accept': '*/*',
+                    'Accept-Language': 'zh-CN,zh;q=0.9',
+                    'Origin': 'https://www.touchgal.ink',
+                    'Referer': 'https://www.touchgal.ink/search',
+                    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36'
+                }},
+                body: {body_json:?}
+            }})
+            .then(r => r.text())
+            .then(t => {{
+                const b64 = btoa(unescape(encodeURIComponent(t)));
+                try {{ localStorage.setItem('__tg_result__', b64); }} catch(e) {{ document.title = '__TG_ERROR__LS:' + String(e); return; }}
+                document.title = '__TG_READY__' + b64.length;
+            }})
+            .catch(e => {{ document.title = '__TG_ERROR__' + String(e); }});
+        }})();"#
+    );
+
+    // 5. 注入 fetch，等待就绪后用 localStorage 分块拉取结果
+    let start = Instant::now();
+    let timeout = Duration::from_secs(25);
+    let mut last_error = String::new();
+    let mut attempt = 0;
+    while start.elapsed() < timeout {
+        // 清空上一轮结果
+        *state.lock().unwrap() = None;
+        if let Err(e) = bridge.eval(js.clone()) {
+            last_error = format!("注入搜索脚本失败: {}", e);
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            continue;
+        }
+        attempt += 1;
+
+        // 等待 READY 标记
+        let poll_start = Instant::now();
+        let mut total_len: Option<usize> = None;
+        while poll_start.elapsed() < Duration::from_secs(8) {
+            let title = state.lock().unwrap().clone();
+            if let Some(title) = title {
+                if title.starts_with("__TG_ERROR__") {
+                    last_error = format!("TouchGal fetch 失败: {}", &title[13..]);
+                    break;
+                }
+                if title.starts_with("__TG_READY__") {
+                    let len: usize = title.trim_start_matches("__TG_READY__").parse().unwrap_or(0);
+                    if len > 0 {
+                        total_len = Some(len);
+                        break;
+                    }
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+
+        if let Some(len) = total_len {
+            // 从 localStorage 分块拉取（每次通过 title 通道传回一段）
+            const CHUNK: usize = 700;
+            let mut b64 = String::with_capacity(len);
+            let mut offset = 0usize;
+            let mut read_ok = true;
+            while offset < len {
+                *state.lock().unwrap() = None;
+                let end = (offset + CHUNK).min(len);
+                let pull_js = format!(
+                    r#"document.title = '__TG_DATA__' + localStorage.getItem('__tg_result__').slice({}, {});"#,
+                    offset, end
+                );
+                if let Err(e) = bridge.eval(pull_js) {
+                    last_error = format!("拉取数据失败: {}", e);
+                    read_ok = false;
+                    break;
+                }
+                let slice_start = Instant::now();
+                let mut got = false;
+                while slice_start.elapsed() < Duration::from_secs(3) {
+                    let title = state.lock().unwrap().clone();
+                    if let Some(title) = title {
+                        if title.starts_with("__TG_DATA__") {
+                            b64.push_str(title.trim_start_matches("__TG_DATA__"));
+                            offset = end;
+                            got = true;
+                            break;
+                        }
+                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                if !got {
+                    last_error = format!("读取数据块超时 (offset={})", offset);
+                    read_ok = false;
+                    break;
+                }
+            }
+            if read_ok && b64.len() == len {
+                let text = decode_base64(&b64)?;
+                return parse_touchgal_response(&text);
+            } else if read_ok {
+                last_error = format!("分块数据不完整: {}/{}", b64.len(), len);
+            }
+        } else if last_error.is_empty() {
+            last_error = "等待 TouchGal 就绪超时".to_string();
+        }
+
+        // 若失败（challenge 未完成等），等待后重试
+        if !last_error.is_empty() && attempt < 6 {
+            println!("[TouchGal] 第 {} 次失败: {}，重新加载页面...", attempt, last_error);
+            tokio::time::sleep(Duration::from_millis(1500)).await;
+            let _ = bridge.navigate(search_url.parse().unwrap());
+        } else {
+            break;
+        }
+    }
+
+    Err(if last_error.is_empty() { "TouchGal 搜索超时".to_string() } else { last_error })
+}
+
+fn decode_base64(encoded: &str) -> Result<String, String> {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .map_err(|e| format!("Base64 解码失败: {}", e))?;
+    let text = String::from_utf8(bytes).map_err(|e| format!("UTF8 解码失败: {}", e))?;
+    // JS 的 unescape(encodeURIComponent()) 会产生 latin1 字节，这里直接当作 UTF-8 处理
+    Ok(text)
+}
+
+fn parse_touchgal_response(raw_text: &str) -> Result<Vec<SearchResult>, String> {
+    let json_val: serde_json::Value = serde_json::from_str(raw_text)
+        .map_err(|e| format!("JSON 解析失败: {}", e))?;
+
+    let mut results = Vec::new();
+    if let Some(games) = json_val["galgames"].as_array() {
+        for g in games {
+            let unique_id = g["uniqueId"].as_str().unwrap_or("").to_string();
+            let name = g["name"].as_str().unwrap_or("未知标题").to_string();
+            let banner = g["banner"].as_str().unwrap_or("").to_string();
+            let date = g["created"].as_str().map(|s| s.split('T').next().unwrap_or("").to_string());
+            let average_rating = g["averageRating"].as_f64();
+            let view = g["view"].as_i64().or_else(|| g["view"].as_u64().map(|v| v as i64));
+
+            results.push(SearchResult {
+                id: unique_id.clone(),
+                title: name,
+                cover: banner,
+                source: "TouchGal".to_string(),
+                url: format!("https://www.touchgal.ink/{}", unique_id),
+                date,
+                average_rating,
+                view,
+            });
+        }
+    } else {
+        println!("[TouchGal] 警告: 未找到 'galgames' 数组，响应: {}", raw_text);
+    }
     Ok(results)
 }
 
@@ -487,6 +741,7 @@ async fn migrate_game_files(payload: MigrateGameFilesPayload) -> Result<MigrateG
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(TouchGalState::default())
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
@@ -504,6 +759,7 @@ pub fn run() {
             get_system_fonts,
             fetch_ymgal_news,
             search_game,
+            touchgal_search,
             get_directory_keywords,
             scan_game_directories,
             get_pd_vms,
