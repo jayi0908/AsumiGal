@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 mod runner;
+mod screenshot;
 mod storage;
 
 // --- 统一的搜索结果结构 ---
@@ -744,6 +745,7 @@ pub fn run() {
         .manage(TouchGalState::default())
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
@@ -755,6 +757,10 @@ pub fn run() {
             storage::get_scripts,
             storage::read_script,
             storage::save_script,
+            screenshot::list_instance_screenshots,
+            screenshot::capture_instance_screenshot,
+            screenshot::capture_game_screenshot,
+            screenshot::delete_instance_screenshot,
             get_home_dir,
             get_system_fonts,
             fetch_ymgal_news,

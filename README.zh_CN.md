@@ -13,9 +13,9 @@
 
 </div>
 
-> \- “你的家族有精神病史吗？”
+> - “你的家族有精神病史吗？”
 >
-> \- “我有个叔叔买 mac 打游戏。”
+> - “我有个叔叔买 mac 打游戏。”
 
 AsumiGal 是一款专为 macOS 设计的 galgame/视觉小说管理器，主要管理通过 CrossOver 与 Parallels Desktop 运行的游戏实例，并兼容原生 macOS APP，旨在补全 galgame 管理器在 macOS 平台的空白。
 

@@ -19,7 +19,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["protocol-asset", "wry", "common-controls-v6"] }
+tauri = { version = "2.11", features = ["protocol-asset", "wry", "common-controls-v6"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # 异步运行时
@@ -35,7 +35,12 @@ dirs = "5.0"
 tauri-plugin-opener = "2"
 tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"
+tauri-plugin-global-shortcut = "2"
 tauri-plugin-http = { version = "2", features = ["unsafe-headers"] }
 font-kit = "0.14.3"
 urlencoding = "2"
 base64 = "0.22"
+# 窗口枚举与屏幕捕获（截图功能）
+core-graphics = "0.23"
+core-foundation = "0.9"
+foreign-types-shared = "0.3"

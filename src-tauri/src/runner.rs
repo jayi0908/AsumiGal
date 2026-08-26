@@ -39,6 +39,29 @@ struct ProcessInfo {
     command: String,
 }
 
+#[derive(Clone, Debug)]
+pub struct TrackedInstance {
+    pub instance_id: String,
+    pub run_mode: String,
+    pub game_exe: String,
+}
+
+pub fn get_running_instances() -> Vec<TrackedInstance> {
+    running_instances()
+        .lock()
+        .ok()
+        .map(|map| {
+            map.iter()
+                .map(|(id, info)| TrackedInstance {
+                    instance_id: id.clone(),
+                    run_mode: info.run_mode.clone(),
+                    game_exe: info.game_exe.clone(),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 static RUNNING_INSTANCES: OnceLock<Mutex<HashMap<String, RunningInstance>>> = OnceLock::new();
 
 fn running_instances() -> &'static Mutex<HashMap<String, RunningInstance>> {
@@ -173,6 +196,97 @@ fn is_wine_wrapper_command(cmd: &str) -> bool {
 fn looks_like_windows_game_process(cmd: &str) -> bool {
     let lower = cmd.to_lowercase();
     lower.contains(".exe") && !is_wine_wrapper_command(&lower)
+}
+
+/// 定位实际在运行游戏的相关进程树（自身 + 子孙 + 最多 5 层祖先，
+/// 以覆盖 Cider 宿主进程代为绘窗口的场景）。返回空 vec 表示未找到。
+pub fn find_game_process_pids(run_mode: &str, executable_path: &str) -> Vec<u32> {
+    let exe = expand_tilde(executable_path.trim());
+    let exe_str = exe.to_string_lossy().to_string();
+    let exe_name_lower = exe
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    if exe_str.is_empty() || exe_name_lower.is_empty() {
+        return Vec::new();
+    }
+
+    let processes = match list_processes() {
+        Ok(p) if !p.is_empty() => p,
+        _ => return Vec::new(),
+    };
+    let children_map = build_children_map(&processes);
+    let parent_of: HashMap<u32, u32> = processes.iter().map(|p| (p.pid, p.ppid)).collect();
+
+    let mut roots: Vec<u32> = Vec::new();
+    match run_mode {
+        "direct" => {
+            roots = processes
+                .iter()
+                .filter(|p| p.command.contains(&exe_str))
+                .map(|p| p.pid)
+                .collect();
+        }
+        "parallels" => {
+            // PD 窗口由 Parallels Desktop 进程渲染，走 owner 名称匹配即可
+        }
+        _ => {
+            let wine_roots: Vec<u32> = processes
+                .iter()
+                .filter(|p| {
+                    let cmd_lower = p.command.to_lowercase();
+                    is_wine_wrapper_command(&p.command)
+                        && (p.command.contains(&exe_str) || cmd_lower.contains(&exe_name_lower))
+                })
+                .map(|p| p.pid)
+                .collect();
+
+            if wine_roots.is_empty() {
+                // 兜底：直接找命令行以该 exe 结尾的 Windows 游戏进程
+                for p in &processes {
+                    if looks_like_windows_game_process(&p.command)
+                        && p.command.to_lowercase().ends_with(&exe_name_lower)
+                    {
+                        roots.push(p.pid);
+                    }
+                }
+            } else {
+                roots = wine_roots;
+            }
+        }
+    }
+
+    let mut set: HashSet<u32> = HashSet::new();
+    let mut stack: Vec<u32> = roots;
+    while let Some(pid) = stack.pop() {
+        if !set.insert(pid) {
+            continue;
+        }
+        if let Some(children) = children_map.get(&pid) {
+            for &c in children {
+                if !set.contains(&c) {
+                    stack.push(c);
+                }
+            }
+        }
+        // 向上追溯父链，纳入代为绘窗的宿主进程
+        let mut cur = parent_of.get(&pid).copied();
+        let mut depth = 0;
+        while let Some(ppid) = cur {
+            if depth >= 5 || ppid == 0 || ppid == 1 {
+                break;
+            }
+            if !set.insert(ppid) {
+                break;
+            }
+            cur = parent_of.get(&ppid).copied();
+            depth += 1;
+        }
+    }
+
+    set.into_iter().collect()
 }
 
 fn normalize_windows_path_for_match(path: &str) -> String {
@@ -381,7 +495,7 @@ fn stop_crossover_instance(
 }
 
 // 如果字符串以 ~/ 开头，则将其替换为真实的系统家目录
-fn expand_tilde(path_str: &str) -> PathBuf {
+pub(crate) fn expand_tilde(path_str: &str) -> PathBuf {
     if path_str.starts_with("~/") {
         if let Some(home) = dirs::home_dir() {
             // 去掉前缀 "~/"，把剩下的部分拼接到 home 目录后面

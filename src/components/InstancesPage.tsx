@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { Plus, Box, Boxes, Save, Trash2, FolderOpen, Play, Settings, Search, X, Loader2, ArrowLeft, ArrowLeftRight, Image as ImageIcon, ChevronDown, CheckCircle, AlertCircle, FileCode2, HardDrive, Laptop, Star, Gamepad2, Flag, ArrowDownWideNarrow, SlidersHorizontal, List, LayoutGrid, Ellipsis, Pencil } from "lucide-react";
+import { Plus, Box, Boxes, Save, Trash2, FolderOpen, Play, Settings, Search, X, Loader2, ArrowLeft, ArrowLeftRight, Image as ImageIcon, ChevronDown, CheckCircle, AlertCircle, FileCode2, HardDrive, Laptop, Star, Gamepad2, Flag, ArrowDownWideNarrow, SlidersHorizontal, List, LayoutGrid, Ellipsis, Pencil, Camera } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
@@ -40,6 +40,12 @@ interface SearchResult {
   cover: string;
   source: string;
   url: string;
+}
+
+interface ScreenshotItem {
+  fileName: string;
+  filePath: string;
+  time: number;
 }
 
 interface BatchItem {
@@ -147,6 +153,12 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
     instance: null,
   });
 
+  const [screenshots, setScreenshots] = useState<ScreenshotItem[]>([]);
+  const [screenshotsId, setScreenshotsId] = useState<string | null>(null);
+  const [isCapturing, setIsCapturing] = useState(false);
+  const [previewShot, setPreviewShot] = useState<ScreenshotItem | null>(null);
+  const [isDeletingShot, setIsDeletingShot] = useState(false);
+
   useEffect(() => {
     fetchContainers();
   }, [config.bottlesPath, config.pdPath]);
@@ -194,6 +206,7 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
         setIsSortMenuOpen(false);
         setIsFilterMenuOpen(false);
         setGridMenuId(null);
+        setPreviewShot(null);
       }
     };
     window.addEventListener("keydown", onKeyDown);
@@ -210,6 +223,108 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
     document.addEventListener("mousedown", onDocMouseDown);
     return () => document.removeEventListener("mousedown", onDocMouseDown);
   }, [isImportMenuOpen]);
+
+  const selectedInstance = instances.find(i => i.id === selectedId);
+  const shotExePath = (selectedInstance?.executablePath || formData.executablePath || "").trim();
+  const shotSaveDir = (() => {
+    const p = shotExePath.replace(/\/+$/, "");
+    const idx = p.lastIndexOf("/");
+    if (idx <= 0) return "";
+    return `${p.slice(0, idx)}/screen_shots`;
+  })();
+
+  const loadScreenshots = async (id: string, exePath: string) => {
+    try {
+      const list = await invoke<ScreenshotItem[]>("list_instance_screenshots", { instanceId: id, executablePath: exePath });
+      setScreenshots(list || []);
+      setScreenshotsId(id);
+    } catch (e) {
+      setScreenshots([]);
+      setScreenshotsId(id);
+    }
+  };
+
+  useEffect(() => {
+    if (!selectedId) {
+      setScreenshots([]);
+      setScreenshotsId(null);
+      return;
+    }
+    let active = true;
+    invoke<ScreenshotItem[]>("list_instance_screenshots", { instanceId: selectedId, executablePath: shotExePath })
+      .then(list => {
+        if (!active) return;
+        setScreenshots(list || []);
+        setScreenshotsId(selectedId);
+      })
+      .catch(() => {
+        if (!active) return;
+        setScreenshots([]);
+        setScreenshotsId(selectedId);
+      });
+    return () => { active = false; };
+  }, [selectedId, shotExePath]);
+
+  // 全局快捷键/快捷栏截屏成功事件：刷新当前实例的截图列表
+  useEffect(() => {
+    const onChanged = (e: Event) => {
+      const detail = (e as CustomEvent).detail as { instanceId?: string | null } | undefined;
+      if (selectedId && detail?.instanceId === selectedId && shotExePath) {
+        loadScreenshots(selectedId, shotExePath);
+      }
+    };
+    window.addEventListener("asumigal-screenshots-changed", onChanged);
+    return () => window.removeEventListener("asumigal-screenshots-changed", onChanged);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedId, shotExePath]);
+
+  const handleCaptureCurrent = async () => {
+    if (!selectedId) return;
+    const inst = instances.find(i => i.id === selectedId);
+    const mode = (formData.runMode || inst?.runMode || 'crossover') as 'crossover' | 'parallels' | 'direct';
+    const execPath = formData.executablePath || inst?.executablePath || '';
+    setIsCapturing(true);
+    try {
+      const shot = await invoke<ScreenshotItem>("capture_instance_screenshot", {
+        instanceId: selectedId,
+        runMode: mode,
+        executablePath: execPath
+      });
+      showToast("截图已保存", "success");
+      await loadScreenshots(selectedId, execPath);
+      setPreviewShot(shot);
+    } catch (e) {
+      showToast(`${e}`, "error");
+    } finally {
+      setIsCapturing(false);
+    }
+  };
+
+  const handleDeleteShot = async (shot: ScreenshotItem) => {
+    if (!selectedId) return;
+    setIsDeletingShot(true);
+    try {
+      await invoke("delete_instance_screenshot", { instanceId: selectedId, executablePath: shotExePath, fileName: shot.fileName });
+      setScreenshots(prev => prev.filter(s => s.fileName !== shot.fileName));
+      setPreviewShot(null);
+      showToast("截图已删除", "success");
+    } catch (e) {
+      showToast(`${e}`, "error");
+    } finally {
+      setIsDeletingShot(false);
+    }
+  };
+
+  const handleSetShotAsCover = (shot: ScreenshotItem) => {
+    setFormData(prev => ({ ...prev, backgroundImage: convertFileSrc(shot.filePath) }));
+    setPreviewShot(null);
+    showToast("已设为封面", "success");
+  };
+
+  const formatShotTime = (t: number) => {
+    if (!t) return "";
+    return new Date(t * 1000).toLocaleString('zh-CN', { hour12: false });
+  };
 
   const normalizePath = (path: string) => path.replace(/\/+$/, '');
 
@@ -879,6 +994,52 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
                     </Tooltip>
                   </div>
                 </div>
+
+                {selectedId && (
+                  <div>
+                    <div className="flex items-center justify-between mb-1 gap-3">
+                      <div className="min-w-0">
+                        <label className="block text-sm font-medium">游戏截图</label>
+                        {shotSaveDir && (
+                          <div className="text-xs text-gray-400 truncate mt-0.5" title={`截图保存位置: ${shotSaveDir}`}>
+                            保存位置：{shotSaveDir}
+                          </div>
+                        )}
+                      </div>
+                      <Tooltip label={shotExePath ? "截取当前游戏窗口" : "请先设置可执行文件路径"}>
+                        <button onClick={handleCaptureCurrent} disabled={isCapturing || !shotExePath} className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-60 transition-colors text-sm shrink-0">
+                          {isCapturing ? <Loader2 size={14} className="animate-spin" /> : <Camera size={14} />} 截取游戏窗口
+                        </button>
+                      </Tooltip>
+                    </div>
+                    {!shotExePath ? (
+                      <div className="aspect-video w-full rounded-xl border border-dashed border-black/15 dark:border-white/15 flex flex-col items-center justify-center text-gray-400">
+                        <Camera size={40} className="mb-2 opacity-40" />
+                        <span className="text-sm">请先设置可执行文件路径，截图将保存到实例所在文件夹的 screen_shots 目录</span>
+                      </div>
+                    ) : screenshotsId !== selectedId ? (
+                      <div className="aspect-video w-full rounded-xl border border-dashed border-black/15 dark:border-white/15 flex items-center justify-center text-gray-400">
+                        <Loader2 size={20} className="animate-spin" />
+                      </div>
+                    ) : screenshots.length === 0 ? (
+                      <div className="aspect-video w-full rounded-xl border border-dashed border-black/15 dark:border-white/15 flex flex-col items-center justify-center text-gray-400">
+                        <Camera size={40} className="mb-2 opacity-40" />
+                        <span className="text-sm">还没有截图，点击「截取游戏窗口」保存游戏瞬间</span>
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-3 gap-3 max-h-[320px] overflow-y-auto custom-scrollbar pr-1">
+                        {screenshots.map(shot => (
+                          <button key={shot.fileName} onClick={() => setPreviewShot(shot)} className="group relative aspect-video rounded-lg overflow-hidden border border-black/10 dark:border-white/10 bg-black/5 dark:bg-black/30 hover:ring-2 hover:ring-blue-500 transition-all">
+                            <img src={convertFileSrc(shot.filePath)} className="w-full h-full object-cover group-hover:scale-105 transition-transform" alt={shot.fileName} />
+                            <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent px-2 pt-4 pb-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                              <span className="text-[10px] text-white/90 truncate block">{formatShotTime(shot.time)}</span>
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 <div>
                   <label className="block text-sm font-medium mb-2">实例名称</label>
@@ -1741,6 +1902,42 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
                   </div>
                 </div>
               )}
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* ===== 截图预览弹窗 ===== */}
+      <AnimatePresence>
+        {previewShot && (
+          <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4" onClick={() => setPreviewShot(null)}>
+            <motion.div
+              initial={{ opacity: 0, scale: 0.96 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.96 }}
+              onClick={e => e.stopPropagation()}
+              className="bg-white dark:bg-[#1e1e1e] rounded-2xl shadow-2xl w-full max-w-4xl overflow-hidden border border-white/10"
+            >
+              <div className="max-h-[68vh] overflow-y-auto custom-scrollbar bg-black/40 flex items-center justify-center">
+                <img src={convertFileSrc(previewShot.filePath)} className="max-w-full max-h-[60vh] object-contain" alt={previewShot.fileName} />
+              </div>
+              <div className="px-5 py-3 border-t border-black/10 dark:border-white/10 flex items-center justify-between gap-3 bg-black/5 dark:bg-white/5">
+                <span className="text-xs text-gray-500 truncate">{previewShot.fileName} · {formatShotTime(previewShot.time)}</span>
+                <div className="flex items-center gap-2 shrink-0">
+                  <button onClick={() => handleSetShotAsCover(previewShot)} className="px-3 py-1.5 text-sm bg-black/5 dark:bg-white/10 rounded-lg hover:bg-black/10 dark:hover:bg-white/20 transition-colors flex items-center gap-1.5">
+                    <ImageIcon size={14} /> 设为封面
+                  </button>
+                  <button onClick={() => revealItemInDir(previewShot.filePath).catch(e => showToast(`无法打开: ${e}`, "error"))} className="px-3 py-1.5 text-sm bg-black/5 dark:bg-white/10 rounded-lg hover:bg-black/10 dark:hover:bg-white/20 transition-colors flex items-center gap-1.5">
+                    <FolderOpen size={14} /> Finder
+                  </button>
+                  <button onClick={() => handleDeleteShot(previewShot)} disabled={isDeletingShot} className="px-3 py-1.5 text-sm text-red-500 bg-red-500/10 rounded-lg hover:bg-red-500/20 disabled:opacity-60 transition-colors flex items-center gap-1.5">
+                    {isDeletingShot ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />} 删除
+                  </button>
+                  <button onClick={() => setPreviewShot(null)} className="p-2 hover:bg-black/10 dark:hover:bg-white/10 rounded-full transition-colors">
+                    <X size={18} />
+                  </button>
+                </div>
+              </div>
             </motion.div>
           </div>
         )}

@@ -1,20 +1,99 @@
 import { useState, useEffect } from "react";
 import { useTheme, ThemeMode } from "../contexts/ThemeContext";
-import { Monitor, Sun, Moon, Type, Image as ImageIcon, FolderOpen, Layout, Cog, Info, Github, Sliders, Search } from "lucide-react";
+import { Monitor, Sun, Moon, Type, Image as ImageIcon, FolderOpen, Layout, Cog, Info, Github, Sliders, Search, Camera } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { open as openUrl } from "@tauri-apps/plugin-shell";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
+import { unregisterAll } from "@tauri-apps/plugin-global-shortcut";
 import { SidebarNavItem } from "./SidebarNavItem";
+import { useToast } from "./ToastProvider";
 import { clsx } from "clsx";
+
+const DEFAULT_SCREENSHOT_SHORTCUT = "cmd+alt+s";
+
+// 将按键事件转换为 Tauri 快捷键字符串（至少包含一个修饰键即可，不强制 Cmd/Ctrl）
+function buildAccelerator(e: KeyboardEvent): string | null {
+  const keyMap: Record<string, string> = {
+    " ": "space",
+    ArrowUp: "up", ArrowDown: "down", ArrowLeft: "left", ArrowRight: "right",
+    Enter: "enter", Tab: "tab", Backspace: "backspace", Delete: "delete", Insert: "insert",
+    Home: "home", End: "end", PageUp: "pageup", PageDown: "pagedown",
+    Semicolon: "semicolon", Comma: "comma", Period: "period", Slash: "slash",
+    Backslash: "backslash", Quote: "quote", BracketLeft: "bracketleft", BracketRight: "bracketright",
+    Minus: "minus", Equal: "equal", Backquote: "backquote",
+  };
+  const key = e.key;
+  let keyPart = "";
+  if (/^[a-zA-Z]$/.test(key)) keyPart = key.toLowerCase();
+  else if (/^\d$/.test(key)) keyPart = key;
+  else if (/^f(\d{1,2})$/i.test(key)) keyPart = key.toLowerCase();
+  else keyPart = keyMap[key] ?? "";
+  if (!keyPart) return null;
+
+  const mods: string[] = [];
+  if (e.metaKey) mods.push("cmd");
+  if (e.ctrlKey) mods.push("ctrl");
+  if (e.altKey) mods.push("alt");
+    if (e.shiftKey) mods.push("shift");
+    if (mods.length === 0) return null;
+    return [...mods, keyPart].join("+");
+}
+
+// 展示用：cmd+alt+s -> ⌘⌥S
+function formatAccelerator(acc: string): string {
+  const modGlyphs: Record<string, string> = { cmd: "⌘", ctrl: "⌃", alt: "⌥", shift: "⇧" };
+  const keyGlyphs: Record<string, string> = {
+    space: "Space", up: "↑", down: "↓", left: "←", right: "→",
+    enter: "↩", tab: "⇥", backspace: "⌫", delete: "⌦", insert: "Ins",
+    home: "↖", end: "↘", pageup: "PgUp", pagedown: "PgDn",
+  };
+  return (acc || "")
+    .split("+")
+    .map(p => modGlyphs[p] ?? (keyGlyphs[p] ?? (p.length === 1 ? p.toUpperCase() : p.charAt(0).toUpperCase() + p.slice(1))))
+    .join("");
+}
 
 type SettingTab = "general" | "global" | "appearance" | "about";
 
 export function SettingsPage() {
   const { config, updateConfig, currentTheme } = useTheme();
+  const { showToast } = useToast();
   const [activeTab, setActiveTab] = useState<SettingTab>("global");
   const [systemFonts, setSystemFonts] = useState<string[]>([]);
   const [bottles, setBottles] = useState<string[]>([]);
   const [pdVms, setPdVms] = useState<string[]>([]);
+  const [isRecordingShortcut, setIsRecordingShortcut] = useState(false);
+
+  // 录制新快捷键：录制期间先解除全局注册（避免按键被已注册的快捷键拦截），退出后派发事件让 App 重新注册
+  useEffect(() => {
+    if (!isRecordingShortcut) return;
+    unregisterAll().catch(() => {});
+    // 先只按下了修饰键（Cmd/Ctrl/Alt/Shift 本身）的事件不作为绑定
+    const MOD_KEYS = new Set(["Meta", "Control", "Alt", "Shift"]);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setIsRecordingShortcut(false);
+        return;
+      }
+      if (MOD_KEYS.has(e.key)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const acc = buildAccelerator(e);
+      if (!acc) {
+        showToast("请再按至少一个修饰键（Cmd/Ctrl/Alt/Shift）组成组合键", "error");
+        return;
+      }
+      setIsRecordingShortcut(false);
+      updateConfig({ screenshotShortcut: acc });
+      showToast("截图快捷键已更新", "success");
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => {
+      window.removeEventListener("keydown", onKey, true);
+      window.dispatchEvent(new CustomEvent("asumigal-shortcut-reregister"));
+    };
+  }, [isRecordingShortcut, updateConfig, showToast]);
 
   // 加载系统字体
   useEffect(() => {
@@ -154,10 +233,55 @@ export function SettingsPage() {
                     </button>
                   </div>
                 </div>
-             </div>
-           </div>
+              </div>
+
+              {/* 游戏截图 */}
+              <div className={cardClass}>
+                <h3 className={subHeadingClass}><Camera size={20} /> 游戏截图</h3>
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <div className={clsx("font-medium", isDark ? "text-white" : "text-gray-900")}>
+                        全局截屏快捷键：<span className="font-mono text-indigo-500">{formatAccelerator(config.screenshotShortcut || DEFAULT_SCREENSHOT_SHORTCUT)}</span>
+                      </div>
+                      <div className={clsx("text-sm mt-1", isDark ? "text-white/50" : "text-gray-500")}>
+                        有游戏实例正在运行时无需打开 AsumiGal，按快捷键即可截取游戏窗口，
+                        并自动保存到该实例所在文件夹的 <span className="font-mono">screen_shots</span> 目录。
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      {isRecordingShortcut ? (
+                        <button
+                          className="px-4 py-2 rounded-lg bg-indigo-500/20 text-indigo-500 border border-indigo-500/40 animate-pulse text-sm font-medium"
+                          onClick={() => setIsRecordingShortcut(false)}
+                        >
+                          按下新快捷键…（Esc 取消）
+                        </button>
+                      ) : (
+                        <>
+                          <button
+                            onClick={() => setIsRecordingShortcut(true)}
+                            className="px-4 py-2 rounded-lg bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-500 text-sm font-medium transition-colors"
+                          >
+                            重新绑定
+                          </button>
+                          {(config.screenshotShortcut || DEFAULT_SCREENSHOT_SHORTCUT) !== DEFAULT_SCREENSHOT_SHORTCUT && (
+                            <button
+                              onClick={() => updateConfig({ screenshotShortcut: DEFAULT_SCREENSHOT_SHORTCUT })}
+                              className="px-4 py-2 rounded-lg text-sm text-gray-500 hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
+                            >
+                              恢复默认
+                            </button>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
         )}
-        
+
         {/* 全局设置 */}
         {activeTab === 'global' && (
           <div className="space-y-6 max-w-3xl">

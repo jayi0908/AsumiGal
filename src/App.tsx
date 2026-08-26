@@ -8,6 +8,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { ToastProvider, useToast } from "./components/ToastProvider";
 import { useTheme, ThemeProvider } from "./contexts/ThemeContext";
 import { listen } from "@tauri-apps/api/event";
+import { register, unregisterAll } from "@tauri-apps/plugin-global-shortcut";
 
 const INITIAL_INSTANCES: GameInstance[] = [];
 
@@ -209,6 +210,53 @@ function AppContent() {
       showToast(`${error}`, "error");
     }
   };
+
+  const handleGlobalCapture = async () => {
+    try {
+      const res = await invoke<{ instanceId: string | null; screenshot: { fileName: string; file_path?: string; filePath?: string } }>(
+        "capture_game_screenshot"
+      );
+      const name = res.instanceId ? instances.find(i => i.id === res.instanceId)?.name : null;
+      showToast(`${name ? name + " " : ""}截图已保存`, "success");
+      window.dispatchEvent(new CustomEvent("asumigal-screenshots-changed", { detail: { instanceId: res.instanceId } }));
+    } catch (error) {
+      console.error("全局截屏异常:", error);
+      showToast(`${error}`, "error");
+    }
+  };
+
+  // 注册/更新全局截屏快捷键（shortcutRev 用于设置页退出录制态后强制重注册）
+  const globalCaptureRef = useRef(handleGlobalCapture);
+  globalCaptureRef.current = handleGlobalCapture;
+  const [shortcutRev, setShortcutRev] = useState(0);
+  useEffect(() => {
+    const onRe = () => setShortcutRev(v => v + 1);
+    window.addEventListener("asumigal-shortcut-reregister", onRe);
+    return () => window.removeEventListener("asumigal-shortcut-reregister", onRe);
+  }, []);
+  useEffect(() => {
+    const acc = (config.screenshotShortcut || "cmd+alt+s").trim();
+    if (!acc) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        await unregisterAll();
+        if (cancelled) return;
+        await register(acc, (event) => {
+          if (event.state === "Pressed") globalCaptureRef.current();
+        });
+      } catch (error) {
+        if (!cancelled) {
+          console.error("快捷键注册失败:", error);
+          showToast(`截图快捷键注册失败: ${error}`, "error");
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+      unregisterAll().catch(() => {});
+    };
+  }, [config.screenshotShortcut, shortcutRev]);
 
   const handleStop = async (instance: GameInstance) => {
     try {
