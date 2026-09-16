@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef } from "react";
-import { Plus, Box, Boxes, Save, Trash2, FolderOpen, Play, Settings, Search, X, Loader2, ArrowLeft, ArrowLeftRight, Image as ImageIcon, ChevronDown, CheckCircle, AlertCircle, FileCode2, HardDrive, Laptop, Star, Gamepad2, Flag, ArrowDownWideNarrow, SlidersHorizontal, List, LayoutGrid, Ellipsis, Pencil, Camera } from "lucide-react";
+import { useState, useEffect, useRef, type ReactNode } from "react";
+import { Plus, Box, Boxes, Save, Trash2, FolderOpen, Play, Settings, Search, X, Loader2, ArrowLeft, ArrowLeftRight, Image as ImageIcon, ChevronDown, CheckCircle, AlertCircle, FileCode2, HardDrive, Laptop, Star, Gamepad2, Flag, ArrowDownWideNarrow, SlidersHorizontal, List, LayoutGrid, Ellipsis, Pencil, Camera, Info } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
@@ -32,6 +32,8 @@ export interface GameInstance {
   isStarred?: boolean;
   isPlaying?: boolean;
   isFinished?: boolean;
+  screenshotCustomDir?: boolean;
+  screenshotRootDir?: string;
 }
 
 interface SearchResult {
@@ -76,6 +78,7 @@ type ImportState = 'none' | 'choice' | 'search_params' | 'search_results' | 'man
 type GameFileStatus = 'disk' | 'local';
 type ViewMode = 'list' | 'grid';
 type SortMode = 'recent' | 'name';
+type DetailTab = 'basic' | 'launch' | 'screenshots';
 
 interface FilterState {
   crossover: boolean;
@@ -103,6 +106,7 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
   const [pdVms, setPdVms] = useState<string[]>([]);
   const [scripts, setScripts] = useState<string[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [detailTab, setDetailTab] = useState<DetailTab>('basic');
   
   const [isImportMenuOpen, setIsImportMenuOpen] = useState(false);
   const [importState, setImportState] = useState<ImportState>('none');
@@ -176,6 +180,7 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
       setFormData(hydrated);
       formDataSnapshotRef.current = JSON.stringify(hydrated);
       setSelectedId(target.id);
+      setDetailTab('basic');
       setImportState('none');
       setIsGameFileStatusOpen(false);
     }
@@ -226,16 +231,18 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
 
   const selectedInstance = instances.find(i => i.id === selectedId);
   const shotExePath = (selectedInstance?.executablePath || formData.executablePath || "").trim();
+  const customShotDir = formData.screenshotCustomDir ? (formData.screenshotRootDir || "").trim() : "";
   const shotSaveDir = (() => {
+    if (customShotDir) return customShotDir;
     const p = shotExePath.replace(/\/+$/, "");
     const idx = p.lastIndexOf("/");
     if (idx <= 0) return "";
     return `${p.slice(0, idx)}/screen_shots`;
   })();
 
-  const loadScreenshots = async (id: string, exePath: string) => {
+  const loadScreenshots = async (id: string, exePath: string, customDir: string) => {
     try {
-      const list = await invoke<ScreenshotItem[]>("list_instance_screenshots", { instanceId: id, executablePath: exePath });
+      const list = await invoke<ScreenshotItem[]>("list_instance_screenshots", { instanceId: id, executablePath: exePath, customScreenshotDir: customDir });
       setScreenshots(list || []);
       setScreenshotsId(id);
     } catch (e) {
@@ -251,7 +258,7 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
       return;
     }
     let active = true;
-    invoke<ScreenshotItem[]>("list_instance_screenshots", { instanceId: selectedId, executablePath: shotExePath })
+    invoke<ScreenshotItem[]>("list_instance_screenshots", { instanceId: selectedId, executablePath: shotExePath, customScreenshotDir: customShotDir })
       .then(list => {
         if (!active) return;
         setScreenshots(list || []);
@@ -263,20 +270,20 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
         setScreenshotsId(selectedId);
       });
     return () => { active = false; };
-  }, [selectedId, shotExePath]);
+  }, [selectedId, shotExePath, customShotDir]);
 
   // 全局快捷键/快捷栏截屏成功事件：刷新当前实例的截图列表
   useEffect(() => {
     const onChanged = (e: Event) => {
       const detail = (e as CustomEvent).detail as { instanceId?: string | null } | undefined;
-      if (selectedId && detail?.instanceId === selectedId && shotExePath) {
-        loadScreenshots(selectedId, shotExePath);
+      if (selectedId && detail?.instanceId === selectedId && (shotExePath || customShotDir)) {
+        loadScreenshots(selectedId, shotExePath, customShotDir);
       }
     };
     window.addEventListener("asumigal-screenshots-changed", onChanged);
     return () => window.removeEventListener("asumigal-screenshots-changed", onChanged);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedId, shotExePath]);
+  }, [selectedId, shotExePath, customShotDir]);
 
   const handleCaptureCurrent = async () => {
     if (!selectedId) return;
@@ -288,10 +295,11 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
       const shot = await invoke<ScreenshotItem>("capture_instance_screenshot", {
         instanceId: selectedId,
         runMode: mode,
-        executablePath: execPath
+        executablePath: execPath,
+        customScreenshotDir: customShotDir
       });
       showToast("截图已保存", "success");
-      await loadScreenshots(selectedId, execPath);
+      await loadScreenshots(selectedId, execPath, customShotDir);
       setPreviewShot(shot);
     } catch (e) {
       showToast(`${e}`, "error");
@@ -304,7 +312,7 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
     if (!selectedId) return;
     setIsDeletingShot(true);
     try {
-      await invoke("delete_instance_screenshot", { instanceId: selectedId, executablePath: shotExePath, fileName: shot.fileName });
+      await invoke("delete_instance_screenshot", { instanceId: selectedId, executablePath: shotExePath, customScreenshotDir: customShotDir, fileName: shot.fileName });
       setScreenshots(prev => prev.filter(s => s.fileName !== shot.fileName));
       setPreviewShot(null);
       showToast("截图已删除", "success");
@@ -794,6 +802,7 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
     setFormData(hydrated);
     formDataSnapshotRef.current = JSON.stringify(hydrated);
     setSelectedId(inst.id);
+    setDetailTab('basic');
     setGridMenuId(null);
     setIsSortMenuOpen(false);
     setIsFilterMenuOpen(false);
@@ -801,6 +810,7 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
 
   const handleGoBack = () => {
     setSelectedId(null);
+    setDetailTab('basic');
     setImportState('none');
     setGridMenuId(null);
   };
@@ -808,6 +818,7 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
   const handleSingleImport = () => {
     setIsImportMenuOpen(false);
     setSelectedId(null);
+    setDetailTab('basic');
     setGridMenuId(null);
     setFormData({ runMode: 'crossover', bottleName: effectiveDefaultBottle });
     setImportState('choice');
@@ -949,14 +960,16 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
                 </div>
               )}
 
+              {/* Tab 导航 */}
+              <div className="flex items-center gap-1 border-b border-black/10 dark:border-white/10 mb-6">
+                <DetailTabButton label="基本信息" icon={<Info size={15} />} active={detailTab === 'basic'} onClick={() => setDetailTab('basic')} />
+                <DetailTabButton label="启动设置" icon={<SlidersHorizontal size={15} />} active={detailTab === 'launch'} onClick={() => setDetailTab('launch')} />
+                <DetailTabButton label="截图" icon={<Camera size={15} />} active={detailTab === 'screenshots'} onClick={() => setDetailTab('screenshots')} />
+              </div>
+
               <div className="space-y-6">
-                {selectedId && (
-                  <div className="flex justify-end">
-                    <div className="px-3 py-1.5 rounded-lg text-sm border border-black/10 dark:border-white/10 bg-black/5 dark:bg-white/5">
-                      游戏文件状态：{getStatusLabel(formData.gameFileStatus)}
-                    </div>
-                  </div>
-                )}
+                {detailTab === 'basic' && (
+                <>
                 <div>
                   <label className="block text-sm font-medium mb-2">封面链接 (Banner URL)</label>
                   <div className="relative aspect-[21/9] w-full bg-black/5 dark:bg-white/5 rounded-xl border border-black/10 dark:border-white/10 overflow-hidden group">
@@ -994,52 +1007,6 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
                     </Tooltip>
                   </div>
                 </div>
-
-                {selectedId && (
-                  <div>
-                    <div className="flex items-center justify-between mb-1 gap-3">
-                      <div className="min-w-0">
-                        <label className="block text-sm font-medium">游戏截图</label>
-                        {shotSaveDir && (
-                          <div className="text-xs text-gray-400 truncate mt-0.5" title={`截图保存位置: ${shotSaveDir}`}>
-                            保存位置：{shotSaveDir}
-                          </div>
-                        )}
-                      </div>
-                      <Tooltip label={shotExePath ? "截取当前游戏窗口" : "请先设置可执行文件路径"}>
-                        <button onClick={handleCaptureCurrent} disabled={isCapturing || !shotExePath} className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-60 transition-colors text-sm shrink-0">
-                          {isCapturing ? <Loader2 size={14} className="animate-spin" /> : <Camera size={14} />} 截取游戏窗口
-                        </button>
-                      </Tooltip>
-                    </div>
-                    {!shotExePath ? (
-                      <div className="aspect-video w-full rounded-xl border border-dashed border-black/15 dark:border-white/15 flex flex-col items-center justify-center text-gray-400">
-                        <Camera size={40} className="mb-2 opacity-40" />
-                        <span className="text-sm">请先设置可执行文件路径，截图将保存到实例所在文件夹的 screen_shots 目录</span>
-                      </div>
-                    ) : screenshotsId !== selectedId ? (
-                      <div className="aspect-video w-full rounded-xl border border-dashed border-black/15 dark:border-white/15 flex items-center justify-center text-gray-400">
-                        <Loader2 size={20} className="animate-spin" />
-                      </div>
-                    ) : screenshots.length === 0 ? (
-                      <div className="aspect-video w-full rounded-xl border border-dashed border-black/15 dark:border-white/15 flex flex-col items-center justify-center text-gray-400">
-                        <Camera size={40} className="mb-2 opacity-40" />
-                        <span className="text-sm">还没有截图，点击「截取游戏窗口」保存游戏瞬间</span>
-                      </div>
-                    ) : (
-                      <div className="grid grid-cols-3 gap-3 max-h-[320px] overflow-y-auto custom-scrollbar pr-1">
-                        {screenshots.map(shot => (
-                          <button key={shot.fileName} onClick={() => setPreviewShot(shot)} className="group relative aspect-video rounded-lg overflow-hidden border border-black/10 dark:border-white/10 bg-black/5 dark:bg-black/30 hover:ring-2 hover:ring-blue-500 transition-all">
-                            <img src={convertFileSrc(shot.filePath)} className="w-full h-full object-cover group-hover:scale-105 transition-transform" alt={shot.fileName} />
-                            <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent px-2 pt-4 pb-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                              <span className="text-[10px] text-white/90 truncate block">{formatShotTime(shot.time)}</span>
-                            </div>
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
 
                 <div>
                   <label className="block text-sm font-medium mb-2">实例名称</label>
@@ -1134,7 +1101,15 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
                   </div>
                 </div>
 
-                {formData.runMode === 'crossover' && (
+                <div>
+                  <label className="block text-sm font-medium mb-2">版本备注 (Info)</label>
+                  <textarea rows={3} placeholder="填写一些备注信息..." value={formData.info || ''} onChange={e => setFormData({ ...formData, info: e.target.value })} className="w-full bg-black/5 dark:bg-white/5 border border-black/10 dark:bg-white/10 rounded-lg px-4 py-2 outline-none resize-none" />
+                </div>
+                </>
+                )}
+
+                {detailTab === 'launch' && (
+                formData.runMode === 'crossover' ? (
                 <>
                   <div className="grid grid-cols-2 gap-4">
                     <div className="min-w-0">
@@ -1271,12 +1246,95 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
                     </button>
                   </div>
                 </>
-                )}
+                ) : (
+                  <div className="rounded-xl border border-dashed border-black/15 dark:border-white/15 flex flex-col items-center justify-center py-12 text-gray-400">
+                    <SlidersHorizontal size={40} className="mb-2 opacity-40" />
+                    <span className="text-sm">当前运行方式没有额外的启动参数</span>
+                  </div>
+                ))}
 
-                <div>
-                  <label className="block text-sm font-medium mb-2">版本备注 (Info)</label>
-                  <textarea rows={3} placeholder="填写一些备注信息..." value={formData.info || ''} onChange={e => setFormData({ ...formData, info: e.target.value })} className="w-full bg-black/5 dark:bg-white/5 border border-black/10 dark:border-white/10 rounded-lg px-4 py-2 outline-none resize-none" />
-                </div>
+                {detailTab === 'screenshots' && selectedId && (
+                  <>
+                    {/* 自定义截图存放路径 */}
+                    <div className="border border-black/10 dark:border-white/10 rounded-xl p-4 space-y-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="text-sm font-medium">启用自定义截图存放路径</div>
+                          <div className="text-xs text-gray-400 mt-0.5">
+                            默认保存到游戏可执行文件所在目录的 <span className="font-mono">screen_shots</span> 子目录；开启后截图将直接存入下方自定义目录
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => setFormData({ ...formData, screenshotCustomDir: !formData.screenshotCustomDir })}
+                          className={clsx("w-12 h-7 rounded-full relative transition-colors shrink-0", formData.screenshotCustomDir ? "bg-blue-500" : "bg-black/15 dark:bg-white/15")}
+                        >
+                          <span className={clsx("w-4 h-4 bg-white rounded-full absolute top-1 transition-all shadow-sm", formData.screenshotCustomDir ? "left-7" : "left-1")} />
+                        </button>
+                      </div>
+                      {formData.screenshotCustomDir && (
+                        <div className="flex gap-2">
+                          <input
+                            value={formData.screenshotRootDir || ''}
+                            onChange={e => setFormData({ ...formData, screenshotRootDir: e.target.value })}
+                            placeholder="填写目录，如 ~/Pictures/GalScreenshots，不存在会自动创建"
+                            className="flex-1 bg-black/5 dark:bg-white/5 border border-black/10 dark:border-white/10 rounded-lg px-4 py-2 outline-none"
+                          />
+                          <button
+                            onClick={async () => {
+                              const selected = await open({ directory: true, defaultPath: formData.screenshotRootDir || undefined });
+                              if (selected && typeof selected === 'string') {
+                                setFormData({ ...formData, screenshotRootDir: selected });
+                              }
+                            }}
+                            className="px-4 py-2 bg-black/5 dark:bg-white/10 rounded-lg hover:bg-black/10 dark:hover:bg-white/20 transition-colors"
+                          >
+                            <FolderOpen size={20} />
+                          </button>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* 截图列表 */}
+                    <div>
+                      <div className="flex items-center justify-between mb-3 gap-3">
+                        <div className="text-xs text-gray-400 truncate" title={`截图保存位置: ${shotSaveDir || '未设置'}`}>
+                          保存位置：{shotSaveDir || '未设置'}
+                        </div>
+                        <Tooltip label={shotExePath ? "截取当前游戏窗口" : (customShotDir ? "未设置可执行文件路径，将按窗口特征匹配目标" : "请先设置可执行文件路径或启用自定义截图存放路径")}>
+                          <button onClick={handleCaptureCurrent} disabled={isCapturing || (!shotExePath && !customShotDir)} className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-60 transition-colors text-sm shrink-0">
+                            {isCapturing ? <Loader2 size={14} className="animate-spin" /> : <Camera size={14} />} 截取游戏窗口
+                          </button>
+                        </Tooltip>
+                      </div>
+                      {!shotExePath && !customShotDir ? (
+                        <div className="aspect-video w-full rounded-xl border border-dashed border-black/15 dark:border-white/15 flex flex-col items-center justify-center text-gray-400">
+                          <Camera size={40} className="mb-2 opacity-40" />
+                          <span className="text-sm">请先设置可执行文件路径，或在上方启用自定义截图存放路径</span>
+                        </div>
+                      ) : screenshotsId !== selectedId ? (
+                        <div className="aspect-video w-full rounded-xl border border-dashed border-black/15 dark:border-white/15 flex items-center justify-center text-gray-400">
+                          <Loader2 size={20} className="animate-spin" />
+                        </div>
+                      ) : screenshots.length === 0 ? (
+                        <div className="aspect-video w-full rounded-xl border border-dashed border-black/15 dark:border-white/15 flex flex-col items-center justify-center text-gray-400">
+                          <Camera size={40} className="mb-2 opacity-40" />
+                          <span className="text-sm">还没有截图，点击「截取游戏窗口」保存游戏瞬间{!shotExePath ? "（未设置可执行文件，窗口匹配可能不够精准）" : ""}</span>
+                        </div>
+                      ) : (
+                        <div className="grid grid-cols-3 gap-3 max-h-[320px] overflow-y-auto custom-scrollbar pr-1">
+                          {screenshots.map(shot => (
+                            <button key={shot.fileName} onClick={() => setPreviewShot(shot)} className="group relative aspect-video rounded-lg overflow-hidden border border-black/10 dark:border-white/10 bg-black/5 dark:bg-black/30 hover:ring-2 hover:ring-blue-500 transition-all">
+                              <img src={convertFileSrc(shot.filePath)} className="w-full h-full object-cover group-hover:scale-105 transition-transform" alt={shot.fileName} />
+                              <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent px-2 pt-4 pb-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                <span className="text-[10px] text-white/90 truncate block">{formatShotTime(shot.time)}</span>
+                              </div>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </>
+                )}
 
                 {selectedId ? (
                   <div className="flex justify-end pt-2">
@@ -1975,5 +2033,21 @@ function IconBtn({ onClick, title, children }: { onClick: () => void; title: str
         {children}
       </button>
     </Tooltip>
+  );
+}
+
+function DetailTabButton({ label, icon, active, onClick }: { label: string; icon: ReactNode; active: boolean; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className={clsx(
+        "flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors",
+        active
+          ? "border-blue-500 text-blue-500"
+          : "border-transparent text-gray-500 dark:text-white/50 hover:text-gray-800 dark:hover:text-white/90"
+      )}
+    >
+      {icon} {label}
+    </button>
   );
 }

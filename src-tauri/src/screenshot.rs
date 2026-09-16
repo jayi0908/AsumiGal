@@ -81,11 +81,24 @@ struct WindowInfo {
     layer: i64,
 }
 
-/// 截图保存目录：实例所在文件夹/screen_shots
-fn instance_screenshot_dir(executable_path: &str) -> Result<PathBuf, String> {
+/// 截图保存目录：
+/// - 用户自定义根目录非空 → 直接使用该目录（不存在则创建）
+/// - 否则 → 实例所在文件夹/screen_shots
+fn instance_screenshot_dir(executable_path: &str, custom_root_dir: &str) -> Result<PathBuf, String> {
+    let custom = custom_root_dir.trim();
+    if !custom.is_empty() {
+        let dir = expand_tilde(custom);
+        if dir == Path::new("/") {
+            return Err("截图根目录不能为系统根目录 /".into());
+        }
+        fs::create_dir_all(&dir)
+            .map_err(|e| format!("创建截图目录失败: {}（目录: {}）", e, dir.display()))?;
+        return Ok(dir);
+    }
+
     let exe = executable_path.trim();
     if exe.is_empty() {
-        return Err("请先设置实例的可执行文件路径，截图将保存到实例所在文件夹".into());
+        return Err("请先设置实例的可执行文件路径，或在截图中启用自定义存放路径".into());
     }
     let exe_path = expand_tilde(exe);
     let parent = exe_path
@@ -362,11 +375,11 @@ fn capture_to_file(
     })
 }
 
-/// 将一次截屏存到指定实例所在文件夹/screen_shots，返回截屏信息
+/// 将一次截屏存到指定实例的截图目录（自定义或默认），返回截屏信息
 fn do_capture(instance: &TrackedInstance) -> Result<ScreenshotInfo, String> {
     ensure_screen_capture_permission()?;
     let target = select_target_window(&instance.run_mode, &instance.game_exe)?;
-    let dir = instance_screenshot_dir(&instance.game_exe)?;
+    let dir = instance_screenshot_dir(&instance.game_exe, &instance.screenshot_dir)?;
     capture_to_file(&target, &dir)
 }
 
@@ -375,11 +388,12 @@ pub fn list_instance_screenshots(
     _app: AppHandle,
     instance_id: String,
     executable_path: String,
+    custom_screenshot_dir: String,
 ) -> Result<Vec<ScreenshotInfo>, String> {
     if instance_id.trim().is_empty() {
         return Ok(Vec::new());
     }
-    let dir = match instance_screenshot_dir(&executable_path) {
+    let dir = match instance_screenshot_dir(&executable_path, &custom_screenshot_dir) {
         Ok(d) => d,
         Err(_) => return Ok(Vec::new()),
     };
@@ -425,10 +439,11 @@ pub fn capture_instance_screenshot(
     instance_id: String,
     run_mode: String,
     executable_path: String,
+    custom_screenshot_dir: String,
 ) -> Result<ScreenshotInfo, String> {
     let _ = instance_id;
-    if executable_path.trim().is_empty() {
-        return Err("请先设置实例的可执行文件路径".into());
+    if executable_path.trim().is_empty() && custom_screenshot_dir.trim().is_empty() {
+        return Err("请先设置实例的可执行文件路径，或启用自定义截图存放路径".into());
     }
     ensure_screen_capture_permission()?;
     let mode = if run_mode.trim().is_empty() {
@@ -437,7 +452,7 @@ pub fn capture_instance_screenshot(
         run_mode.as_str()
     };
     let target = select_target_window(mode, &executable_path)?;
-    let dir = instance_screenshot_dir(&executable_path)?;
+    let dir = instance_screenshot_dir(&executable_path, &custom_screenshot_dir)?;
     capture_to_file(&target, &dir)
 }
 
@@ -471,7 +486,7 @@ pub fn capture_game_screenshot(_app: AppHandle) -> Result<GlobalCaptureResult, S
         0 => Err("未找到正在运行的游戏窗口，请确认游戏窗口当前可见后再试".into()),
         1 => {
             let (instance, target) = matched.remove(0);
-            let dir = instance_screenshot_dir(&instance.game_exe)?;
+            let dir = instance_screenshot_dir(&instance.game_exe, &instance.screenshot_dir)?;
             let shot = capture_to_file(&target, &dir)?;
             Ok(GlobalCaptureResult {
                 instance_id: Some(instance.instance_id),
@@ -487,6 +502,7 @@ pub fn delete_instance_screenshot(
     _app: AppHandle,
     instance_id: String,
     executable_path: String,
+    custom_screenshot_dir: String,
     file_name: String,
 ) -> Result<(), String> {
     let _ = instance_id;
@@ -498,7 +514,8 @@ pub fn delete_instance_screenshot(
     {
         return Err("无效的截图文件名".into());
     }
-    let path = instance_screenshot_dir(&executable_path)?.join(&file_name);
+    let path = instance_screenshot_dir(&executable_path, &custom_screenshot_dir)?
+        .join(&file_name);
     fs::remove_file(&path).map_err(|e| format!("删除截图失败: {}", e))
 }
 

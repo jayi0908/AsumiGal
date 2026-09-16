@@ -192,7 +192,8 @@ function AppContent() {
           dry_run_active: isDryRun,
           command_args: instance.commandArgs || '',
           env_vars: instance.envVars || '',
-          work_dir: instance.workDir || ''
+          work_dir: instance.workDir || '',
+          screenshot_dir: instance.screenshotCustomDir ? (instance.screenshotRootDir || '').trim() : ''
         }
       });
       showToast(`${instance.name} 启动成功 (PID: ${response})`, "success");
