@@ -19,6 +19,8 @@ pub struct WineConfig {
     pub work_dir: Option<String>,
     /// 用户自定义截图根目录（空 = 使用可执行文件所在目录/screen_shots 默认规则）
     pub screenshot_dir: Option<String>,
+    /// 截图目标应用："game"（默认，实例游戏程序）| "focused"（当前焦点应用）
+    pub screenshot_target: Option<String>,
 }
 
 #[derive(serde::Serialize, Clone)]
@@ -33,6 +35,7 @@ struct RunningInstance {
     run_mode: String,
     game_exe: String,
     screenshot_dir: String,
+    screenshot_target: String,
 }
 
 #[derive(Clone)]
@@ -49,6 +52,8 @@ pub struct TrackedInstance {
     pub game_exe: String,
     /// 用户自定义截图根目录（空 = 默认规则）
     pub screenshot_dir: String,
+    /// 截图目标应用："game"（默认）| "focused"
+    pub screenshot_target: String,
 }
 
 pub fn get_running_instances() -> Vec<TrackedInstance> {
@@ -62,6 +67,7 @@ pub fn get_running_instances() -> Vec<TrackedInstance> {
                     run_mode: info.run_mode.clone(),
                     game_exe: info.game_exe.clone(),
                     screenshot_dir: info.screenshot_dir.clone(),
+                    screenshot_target: info.screenshot_target.clone(),
                 })
                 .collect()
         })
@@ -80,6 +86,7 @@ fn track_running_instance(
     run_mode: &str,
     game_exe: &str,
     screenshot_dir: &str,
+    screenshot_target: &str,
 ) {
     if let Ok(mut map) = running_instances().lock() {
         map.insert(
@@ -89,6 +96,7 @@ fn track_running_instance(
                 run_mode: run_mode.to_string(),
                 game_exe: game_exe.to_string(),
                 screenshot_dir: screenshot_dir.to_string(),
+                screenshot_target: screenshot_target.to_string(),
             },
         );
     }
@@ -646,6 +654,7 @@ pub async fn launch_game(app: AppHandle, instance_id: String, config: WineConfig
             "parallels",
             &exe_for_track,
             config.screenshot_dir.as_deref().unwrap_or("").trim(),
+            config.screenshot_target.as_deref().unwrap_or("game"),
         );
 
         if !config.dry_run_active.unwrap_or(false) {
@@ -767,6 +776,7 @@ pub async fn launch_game(app: AppHandle, instance_id: String, config: WineConfig
             "direct",
             &exe_for_track,
             config.screenshot_dir.as_deref().unwrap_or("").trim(),
+            config.screenshot_target.as_deref().unwrap_or("game"),
         );
 
         if !config.dry_run_active.unwrap_or(false) {
@@ -859,6 +869,7 @@ pub async fn launch_game(app: AppHandle, instance_id: String, config: WineConfig
         "crossover",
         &exe_for_track,
         config.screenshot_dir.as_deref().unwrap_or("").trim(),
+        config.screenshot_target.as_deref().unwrap_or("game"),
     );
     
     if !config.dry_run_active.unwrap_or(false) {

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, type ReactNode } from "react";
-import { Plus, Box, Boxes, Save, Trash2, FolderOpen, Play, Settings, Search, X, Loader2, ArrowLeft, ArrowLeftRight, Image as ImageIcon, ChevronDown, CheckCircle, AlertCircle, FileCode2, HardDrive, Laptop, Star, Gamepad2, Flag, ArrowDownWideNarrow, SlidersHorizontal, List, LayoutGrid, Ellipsis, Pencil, Camera, Info } from "lucide-react";
+import { Plus, Box, Boxes, Save, Trash2, FolderOpen, Play, Settings, Search, X, Loader2, ArrowLeft, ArrowLeftRight, Image as ImageIcon, ChevronDown, CheckCircle, AlertCircle, FileCode2, HardDrive, Laptop, Star, Gamepad2, Flag, ArrowDownWideNarrow, SlidersHorizontal, List, LayoutGrid, Ellipsis, Pencil, Camera, Info, Monitor } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
@@ -34,6 +34,7 @@ export interface GameInstance {
   isFinished?: boolean;
   screenshotCustomDir?: boolean;
   screenshotRootDir?: string;
+  screenshotTarget?: 'game' | 'focused';
 }
 
 interface SearchResult {
@@ -72,6 +73,7 @@ interface InstancesPageProps {
   onConsumeSettingsTarget?: () => void;
   focusInstanceId?: string | null;
   onConsumeFocusInstance?: () => void;
+  onActiveInstanceIdChange?: (id: string | null) => void;
 }
 
 type ImportState = 'none' | 'choice' | 'search_params' | 'search_results' | 'manual_form';
@@ -98,7 +100,7 @@ const EMPTY_FILTERS: FilterState = {
   finished: false,
 };
 
-export function InstancesPage({ instances, setInstances, onLaunch, settingsTargetId, onConsumeSettingsTarget, focusInstanceId, onConsumeFocusInstance }: InstancesPageProps) {
+export function InstancesPage({ instances, setInstances, onLaunch, settingsTargetId, onConsumeSettingsTarget, focusInstanceId, onConsumeFocusInstance, onActiveInstanceIdChange }: InstancesPageProps) {
   const { config, updateConfig } = useTheme();
   const { showToast } = useToast();
   
@@ -121,6 +123,7 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
   const [isBatchMatching, setIsBatchMatching] = useState(false);
   const [editingBatchItemId, setEditingBatchItemId] = useState<string | null>(null);
   const [isGameFileStatusOpen, setIsGameFileStatusOpen] = useState(false);
+  const [isShotTargetOpen, setIsShotTargetOpen] = useState(false);
   const [isMigratingGameFiles, setIsMigratingGameFiles] = useState(false);
   const cardsContainerRef = useRef<HTMLDivElement | null>(null);
   const importMenuRef = useRef<HTMLDivElement | null>(null);
@@ -183,6 +186,7 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
       setDetailTab('basic');
       setImportState('none');
       setIsGameFileStatusOpen(false);
+      setIsShotTargetOpen(false);
     }
     if (onConsumeSettingsTarget) {
       onConsumeSettingsTarget();
@@ -232,6 +236,7 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
   const selectedInstance = instances.find(i => i.id === selectedId);
   const shotExePath = (selectedInstance?.executablePath || formData.executablePath || "").trim();
   const customShotDir = formData.screenshotCustomDir ? (formData.screenshotRootDir || "").trim() : "";
+  const shotTarget: 'game' | 'focused' = formData.screenshotTarget === 'focused' ? 'focused' : 'game';
   const shotSaveDir = (() => {
     if (customShotDir) return customShotDir;
     const p = shotExePath.replace(/\/+$/, "");
@@ -250,6 +255,11 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
       setScreenshotsId(id);
     }
   };
+
+  // 上抛当前选中实例，供全局快捷键截屏读取其截图配置（跨 tab 保持）
+  useEffect(() => {
+    onActiveInstanceIdChange?.(selectedId);
+  }, [selectedId, onActiveInstanceIdChange]);
 
   useEffect(() => {
     if (!selectedId) {
@@ -296,7 +306,8 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
         instanceId: selectedId,
         runMode: mode,
         executablePath: execPath,
-        customScreenshotDir: customShotDir
+        customScreenshotDir: customShotDir,
+        screenshotTarget: shotTarget
       });
       showToast("截图已保存", "success");
       await loadScreenshots(selectedId, execPath, customShotDir);
@@ -1255,6 +1266,46 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
 
                 {detailTab === 'screenshots' && selectedId && (
                   <>
+                    {/* 当前截图应用选择 */}
+                    <div>
+                      <label className="block text-sm font-medium mb-2">当前截图应用选择</label>
+                      <div className="border border-black/10 dark:border-white/10 rounded-xl overflow-hidden max-w-sm">
+                        <button
+                          type="button"
+                          onClick={() => setIsShotTargetOpen(!isShotTargetOpen)}
+                          className="w-full text-left p-3 bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 transition-colors flex justify-between items-center"
+                        >
+                          <span className="font-medium">{shotTarget === 'focused' ? '当前屏幕焦点的应用' : '实例游戏程序'}</span>
+                          <ChevronDown className={`transition-transform duration-300 ${isShotTargetOpen ? 'rotate-180' : ''}`} size={18} />
+                        </button>
+                        <AnimatePresence>
+                          {isShotTargetOpen && (
+                            <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} className="overflow-hidden">
+                              <div className="p-2 border-t border-black/10 dark:border-white/10 space-y-1">
+                                <button
+                                  type="button"
+                                  onClick={() => { setFormData({ ...formData, screenshotTarget: 'game' }); setIsShotTargetOpen(false); }}
+                                  className="w-full flex items-center gap-2 p-2 rounded-lg hover:bg-black/5 dark:hover:bg-white/5 text-left"
+                                >
+                                  <Box size={16} /> 实例游戏程序（默认）
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => { setFormData({ ...formData, screenshotTarget: 'focused' }); setIsShotTargetOpen(false); }}
+                                  className="w-full flex items-center gap-2 p-2 rounded-lg hover:bg-black/5 dark:hover:bg-white/5 text-left"
+                                >
+                                  <Monitor size={16} /> 当前屏幕焦点的应用
+                                </button>
+                              </div>
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
+                      </div>
+                      <div className="text-xs text-gray-400 mt-1.5">
+                        默认为实例的游戏程序；选择「当前屏幕焦点的应用」后，将截取截屏时刻最顶层的应用窗口（不含 AsumiGal 自身），且无需游戏正在运行，全局快捷键同样生效
+                      </div>
+                    </div>
+
                     {/* 自定义截图存放路径 */}
                     <div className="border border-black/10 dark:border-white/10 rounded-xl p-4 space-y-3">
                       <div className="flex items-center justify-between gap-3">

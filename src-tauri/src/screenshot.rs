@@ -282,6 +282,22 @@ fn select_target_window(run_mode: &str, executable_path: &str) -> Result<WindowI
     })
 }
 
+/// 选择当前屏幕焦点应用窗口：CGWindowList 按 z 序（前→后）返回，
+/// 取第一个普通应用窗口（排除 AsumiGal 自身与系统窗口）
+fn select_focused_window() -> Result<WindowInfo, String> {
+    let windows = list_on_screen_windows()?;
+    for w in &windows {
+        if w.owner.eq_ignore_ascii_case("AsumiGal") {
+            continue;
+        }
+        if w.layer != 0 || SYSTEM_OWNERS.contains(&w.owner.as_str()) {
+            continue;
+        }
+        return Ok(w.clone());
+    }
+    Err("未找到可截取的前景应用窗口，请确认目标应用窗口当前可见".to_string())
+}
+
 fn ensure_screen_capture_permission() -> Result<(), String> {
     if ScreenCaptureAccess.preflight() {
         return Ok(());
@@ -375,10 +391,19 @@ fn capture_to_file(
     })
 }
 
+/// 按实例配置选择截屏目标窗口（游戏程序 / 当前焦点应用）
+fn select_target_for_instance(instance: &TrackedInstance) -> Result<WindowInfo, String> {
+    if instance.screenshot_target.trim() == "focused" {
+        select_focused_window()
+    } else {
+        select_target_window(&instance.run_mode, &instance.game_exe)
+    }
+}
+
 /// 将一次截屏存到指定实例的截图目录（自定义或默认），返回截屏信息
 fn do_capture(instance: &TrackedInstance) -> Result<ScreenshotInfo, String> {
     ensure_screen_capture_permission()?;
-    let target = select_target_window(&instance.run_mode, &instance.game_exe)?;
+    let target = select_target_for_instance(instance)?;
     let dir = instance_screenshot_dir(&instance.game_exe, &instance.screenshot_dir)?;
     capture_to_file(&target, &dir)
 }
@@ -440,6 +465,7 @@ pub fn capture_instance_screenshot(
     run_mode: String,
     executable_path: String,
     custom_screenshot_dir: String,
+    screenshot_target: String,
 ) -> Result<ScreenshotInfo, String> {
     let _ = instance_id;
     if executable_path.trim().is_empty() && custom_screenshot_dir.trim().is_empty() {
@@ -451,14 +477,38 @@ pub fn capture_instance_screenshot(
     } else {
         run_mode.as_str()
     };
-    let target = select_target_window(mode, &executable_path)?;
+    let target = if screenshot_target.trim() == "focused" {
+        select_focused_window()?
+    } else {
+        select_target_window(mode, &executable_path)?
+    };
     let dir = instance_screenshot_dir(&executable_path, &custom_screenshot_dir)?;
     capture_to_file(&target, &dir)
 }
 
-/// 全局快捷键截屏：根据正在运行的实例自动确定目标窗口与保存位置
+/// 全局快捷键截屏：根据正在运行的实例自动确定目标窗口与保存位置。
+/// 当前选中实例若配置了「当前焦点应用」，则优先按该配置截屏（不要求游戏正在运行）。
 #[command]
-pub fn capture_game_screenshot(_app: AppHandle) -> Result<GlobalCaptureResult, String> {
+pub fn capture_game_screenshot(
+    _app: AppHandle,
+    active_instance_id: String,
+    active_run_mode: String,
+    active_executable_path: String,
+    active_screenshot_dir: String,
+    active_screenshot_target: String,
+) -> Result<GlobalCaptureResult, String> {
+    let _ = active_run_mode;
+    if !active_instance_id.trim().is_empty() && active_screenshot_target.trim() == "focused" {
+        ensure_screen_capture_permission()?;
+        let target = select_focused_window()?;
+        let dir = instance_screenshot_dir(&active_executable_path, &active_screenshot_dir)?;
+        let shot = capture_to_file(&target, &dir)?;
+        return Ok(GlobalCaptureResult {
+            instance_id: Some(active_instance_id),
+            screenshot: shot,
+        });
+    }
+
     let running = get_running_instances();
     if running.is_empty() {
         return Err("当前没有正在运行的实例，请先启动游戏".into());
@@ -475,9 +525,28 @@ pub fn capture_game_screenshot(_app: AppHandle) -> Result<GlobalCaptureResult, S
         });
     }
 
-    // 多个实例同时运行：尝试用各自模式严格匹配窗口，恰好只有一个实例匹配成功则用它
+    // 多个实例同时运行：若有且仅有一个实例选择了「当前焦点应用」，直接截焦点窗口并归到该实例
+    let focused_running: Vec<&TrackedInstance> = running
+        .iter()
+        .filter(|i| i.screenshot_target.trim() == "focused")
+        .collect();
+    if focused_running.len() == 1 {
+        let instance = focused_running[0];
+        let target = select_focused_window()?;
+        let dir = instance_screenshot_dir(&instance.game_exe, &instance.screenshot_dir)?;
+        let shot = capture_to_file(&target, &dir)?;
+        return Ok(GlobalCaptureResult {
+            instance_id: Some(instance.instance_id.clone()),
+            screenshot: shot,
+        });
+    }
+
+    // 尝试用各自模式严格匹配窗口，恰好只有一个实例匹配成功则用它
     let mut matched: Vec<(TrackedInstance, WindowInfo)> = Vec::new();
     for instance in &running {
+        if instance.screenshot_target.trim() == "focused" {
+            continue;
+        }
         if let Some(window) = select_window_strict(&instance.run_mode, &instance.game_exe) {
             matched.push((instance.clone(), window));
         }

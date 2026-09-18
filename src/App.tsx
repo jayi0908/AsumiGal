@@ -193,7 +193,8 @@ function AppContent() {
           command_args: instance.commandArgs || '',
           env_vars: instance.envVars || '',
           work_dir: instance.workDir || '',
-          screenshot_dir: instance.screenshotCustomDir ? (instance.screenshotRootDir || '').trim() : ''
+          screenshot_dir: instance.screenshotCustomDir ? (instance.screenshotRootDir || '').trim() : '',
+          screenshot_target: instance.screenshotTarget === 'focused' ? 'focused' : 'game'
         }
       });
       showToast(`${instance.name} 启动成功 (PID: ${response})`, "success");
@@ -212,10 +213,21 @@ function AppContent() {
     }
   };
 
+  // 当前选中的实例（由 InstancesPage 上抛，跨 tab 保持），供全局快捷键截屏读取其截图配置
+  const [activeInstanceId, setActiveInstanceId] = useState<string | null>(null);
+  const activeInstance = activeInstanceId ? instances.find(i => i.id === activeInstanceId) : undefined;
+
   const handleGlobalCapture = async () => {
     try {
       const res = await invoke<{ instanceId: string | null; screenshot: { fileName: string; file_path?: string; filePath?: string } }>(
-        "capture_game_screenshot"
+        "capture_game_screenshot",
+        {
+          activeInstanceId: activeInstance?.id || "",
+          activeRunMode: activeInstance?.runMode || "crossover",
+          activeExecutablePath: activeInstance?.executablePath || "",
+          activeScreenshotDir: activeInstance?.screenshotCustomDir ? (activeInstance.screenshotRootDir || "").trim() : "",
+          activeScreenshotTarget: activeInstance?.screenshotTarget === "focused" ? "focused" : "game"
+        }
       );
       const name = res.instanceId ? instances.find(i => i.id === res.instanceId)?.name : null;
       showToast(`${name ? name + " " : ""}截图已保存`, "success");
@@ -337,6 +349,7 @@ function AppContent() {
           onConsumeSettingsTarget={() => setInstanceSettingsTargetId(null)}
           focusInstanceId={focusInstanceId}
           onConsumeFocusInstance={() => setFocusInstanceId(null)}
+          onActiveInstanceIdChange={setActiveInstanceId}
         />
       )}
 
