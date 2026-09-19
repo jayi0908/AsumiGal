@@ -62,6 +62,22 @@ pnpm tauri dev
 pnpm tauri build
 ```
 
+### Screen Recording Permission (Screenshots)
+
+The screenshot feature requires the system **Screen Recording** permission. If AsumiGal already appears as enabled in System Settings but you are still prompted for permission on every screenshot, it is usually caused by **stale entries from a previous build** (without a developer certificate, macOS identifies the app by its build hash, so an older grant no longer matches after a rebuild). Run the following commands to clear any leftover entries and grant the permission again:
+
+```bash
+# 1. Clear any leftover Screen Recording entries for AsumiGal
+tccutil reset ScreenCapture com.jayi0908.asumigal
+
+# 2. Open System Settings → Privacy & Security → Screen & System Audio Recording
+open "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+```
+
+Then enable the toggle for AsumiGal in the list and choose "Quit & Reopen" when macOS asks.
+
+> Note: this may need to be repeated once after each app update.
+
 ## Inspiration & Acknowledgements
 
 - [touchgal](https://touchgal.top) and [kungal](https://kungal.com) - providing rich game data

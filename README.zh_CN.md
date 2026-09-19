@@ -62,6 +62,22 @@ pnpm tauri dev
 pnpm tauri build
 ```
 
+### 屏幕录制权限（截图功能）
+
+截图功能需要系统的「屏幕录制」权限。如果系统设置里 AsumiGal 已显示为开启，但截图时仍反复弹出授权请求，通常是**升级应用后旧的授权条目失效**导致的（应用未使用开发者证书签名时，macOS 按构建哈希识别应用，重新构建后旧授权不再匹配）。执行以下命令清除可能存在的旧条目并重新授权：
+
+```bash
+# 1. 清除 AsumiGal 可能遗留的屏幕录制授权记录
+tccutil reset ScreenCapture com.jayi0908.asumigal
+
+# 2. 打开「系统设置 → 隐私与安全性 → 录屏与系统录音」
+open "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+```
+
+随后在列表里打开 AsumiGal 的开关，并在系统提示时选择「退出并重新打开」应用即可。
+
+> 注意：每次更新应用后可能需要重复一次此步骤。
+
 ## 灵感来源 & 致谢
 
 - [touchgal](https://touchgal.top) 和 [kungal](https://kungal.com) - 提供了丰富的游戏数据

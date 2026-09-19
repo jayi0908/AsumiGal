@@ -62,6 +62,22 @@ pnpm tauri dev
 pnpm tauri build
 ```
 
+### 画面収録の権限（スクリーンショット機能）
+
+スクリーンショット機能にはシステムの「画面収録」権限が必要です。システム設定で AsumiGal がすでに有効になっているのに、スクリーンショットのたびに権限を求められる場合、通常は**以前のビルドの古い許可エントリ**が原因です（開発者証明書がない場合、macOS はビルドハッシュでアプリを識別するため、再ビルド後に古い許可が一致しなくなります）。以下を実行して古いエントリを削除し、再度許可してください：
+
+```bash
+# 1. AsumiGal に残った画面収録の許可エントリを削除
+tccutil reset ScreenCapture com.jayi0908.asumigal
+
+# 2. 「システム設定 → プライバシーとセキュリティ → 画面収録とシステムオーディオ」を開く
+open "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+```
+
+その後、一覧で AsumiGal のスイッチをオンにし、macOS の確認で「終了して再度開く」を選択してください。
+
+> 注意：アプリを更新するたびに、この手順が一度必要になる場合があります。
+
 ## インスピレーションと謝辞
 
 - [touchgal](https://touchgal.top) と [kungal](https://kungal.com) - 豊富なゲームデータの提供
