@@ -277,6 +277,25 @@ export function SettingsPage() {
                       )}
                     </div>
                   </div>
+
+                  <div className="flex items-center justify-between gap-4 pt-3 border-t border-black/5 dark:border-white/10">
+                    <div className={clsx("text-sm", isDark ? "text-white/50" : "text-gray-500")}>
+                      首次使用需授予屏幕录制权限。若系统设置里显示已授权却仍提示授权失败，
+                      通常是授权条目对应的是旧构建（开发模式下重新编译会更换应用身份）。
+                    </div>
+                    <button
+                      onClick={async () => {
+                        try {
+                          await invoke("open_screen_recording_settings");
+                        } catch (e) {
+                          showToast(`${e}`, "error");
+                        }
+                      }}
+                      className="px-4 py-2 rounded-lg bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-500 text-sm font-medium transition-colors shrink-0"
+                    >
+                      打开屏幕录制设置
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>

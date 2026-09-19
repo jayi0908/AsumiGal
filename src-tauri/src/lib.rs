@@ -761,6 +761,7 @@ pub fn run() {
             screenshot::capture_instance_screenshot,
             screenshot::capture_game_screenshot,
             screenshot::delete_instance_screenshot,
+            screenshot::open_screen_recording_settings,
             get_home_dir,
             get_system_fonts,
             fetch_ymgal_news,

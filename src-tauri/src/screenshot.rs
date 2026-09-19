@@ -286,11 +286,22 @@ fn select_target_window(run_mode: &str, executable_path: &str) -> Result<WindowI
 /// 取第一个普通应用窗口（排除 AsumiGal 自身与系统窗口）
 fn select_focused_window() -> Result<WindowInfo, String> {
     let windows = list_on_screen_windows()?;
+    // 优先普通应用窗口（z 序最靠前）
     for w in &windows {
-        if w.owner.eq_ignore_ascii_case("AsumiGal") {
+        if w.owner.eq_ignore_ascii_case("AsumiGal") || SYSTEM_OWNERS.contains(&w.owner.as_str()) {
             continue;
         }
-        if w.layer != 0 || SYSTEM_OWNERS.contains(&w.owner.as_str()) {
+        if w.layer != 0 {
+            continue;
+        }
+        return Ok(w.clone());
+    }
+    // 兜底：部分远程/游戏窗口层级非 0，放宽层级限制
+    for w in &windows {
+        if w.owner.eq_ignore_ascii_case("AsumiGal") || SYSTEM_OWNERS.contains(&w.owner.as_str()) {
+            continue;
+        }
+        if w.layer > 10 {
             continue;
         }
         return Ok(w.clone());
@@ -298,12 +309,71 @@ fn select_focused_window() -> Result<WindowInfo, String> {
     Err("未找到可截取的前景应用窗口，请确认目标应用窗口当前可见".to_string())
 }
 
-fn ensure_screen_capture_permission() -> Result<(), String> {
+// 每次会话最多弹一次系统授权框（macOS 授权后当前进程 preflight 仍为 false，必须重启才生效），
+// 否则每次截屏都 request() 会形成「弹框→授权→重启→再弹框」的死循环
+static CAPTURE_PROMPTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// 未授权时返回提示文案（会话内最多弹一次系统框）；返回 None 表示 preflight 通过，
+/// 或授权情况无法确定——此时应直接尝试截屏，用实际结果判断（preflight 并不可靠）
+fn screen_capture_permission_hint() -> Option<String> {
     if ScreenCaptureAccess.preflight() {
-        return Ok(());
+        return None;
     }
-    let _ = ScreenCaptureAccess.request();
-    Err("需要屏幕录制权限：请在「系统设置 → 隐私与安全性 → 屏幕录制」中允许 AsumiGal，然后重启应用后重试".into())
+    if CAPTURE_PROMPTED
+        .compare_exchange(false, true, std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst)
+        .is_err()
+    {
+        return Some("尚未授予屏幕录制权限：请在「系统设置 → 隐私与安全性 → 屏幕录制」中允许 AsumiGal，然后重启应用".into());
+    }
+    if ScreenCaptureAccess.request() {
+        return None;
+    }
+    Some("需要屏幕录制权限：请在「系统设置 → 隐私与安全性 → 屏幕录制」中允许 AsumiGal，然后重启应用".into())
+}
+
+fn with_permission_hint(msg: String) -> String {
+    match screen_capture_permission_hint() {
+        Some(h) => format!("{}（{}）", msg, h),
+        None => msg,
+    }
+}
+
+/// 判断捕获结果是否为空白画面（整幅接近全黑），这通常意味着没有屏幕录制权限
+fn image_looks_blank(image: &CGImage) -> bool {
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGImageGetDataProvider(image: CGImageRef) -> *mut c_void;
+    }
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
+        fn CGDataProviderCopyData(provider: *mut c_void) -> core_foundation::data::CFDataRef;
+    }
+
+    unsafe {
+        let provider = CGImageGetDataProvider(image.as_ptr());
+        if provider.is_null() {
+            return true;
+        }
+        let data = CGDataProviderCopyData(provider);
+        if data.is_null() {
+            return true;
+        }
+        let data = core_foundation::data::CFData::wrap_under_create_rule(data);
+        let bytes = data.bytes();
+        let bpp = ((image.bits_per_pixel() / 8) as usize).max(1);
+        if bytes.len() < bpp {
+            return true;
+        }
+        let step = bpp * 97; // 质数步长抽样，避开行对齐规律
+        let mut i = 0usize;
+        while i + 3 < bytes.len() {
+            if bytes[i] > 3 || bytes[i + 1] > 3 || bytes[i + 2] > 3 {
+                return false;
+            }
+            i += step;
+        }
+        true
+    }
 }
 
 fn save_png_image(image: &CGImage, out_path: &Path) -> Result<(), String> {
@@ -374,7 +444,15 @@ fn capture_to_file(
         target.id,
         kCGWindowImageDefault,
     )
-    .ok_or_else(|| "窗口捕获失败，窗口可能已隐藏或位于其他桌面/空间".to_string())?;
+    .ok_or_else(|| {
+        with_permission_hint("窗口捕获失败，窗口可能已隐藏或位于其他桌面/空间".to_string())
+    })?;
+    if image_looks_blank(&image) {
+        return Err(with_permission_hint(format!(
+            "截取到空白画面（{}），窗口可能已最小化、被遮挡，或未授予屏幕录制权限",
+            target.owner
+        )));
+    }
     save_png_image(&image, &out_path)?;
     let time = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -393,16 +471,16 @@ fn capture_to_file(
 
 /// 按实例配置选择截屏目标窗口（游戏程序 / 当前焦点应用）
 fn select_target_for_instance(instance: &TrackedInstance) -> Result<WindowInfo, String> {
-    if instance.screenshot_target.trim() == "focused" {
+    let result = if instance.screenshot_target.trim() == "focused" {
         select_focused_window()
     } else {
         select_target_window(&instance.run_mode, &instance.game_exe)
-    }
+    };
+    result.map_err(with_permission_hint)
 }
 
 /// 将一次截屏存到指定实例的截图目录（自定义或默认），返回截屏信息
 fn do_capture(instance: &TrackedInstance) -> Result<ScreenshotInfo, String> {
-    ensure_screen_capture_permission()?;
     let target = select_target_for_instance(instance)?;
     let dir = instance_screenshot_dir(&instance.game_exe, &instance.screenshot_dir)?;
     capture_to_file(&target, &dir)
@@ -471,16 +549,15 @@ pub fn capture_instance_screenshot(
     if executable_path.trim().is_empty() && custom_screenshot_dir.trim().is_empty() {
         return Err("请先设置实例的可执行文件路径，或启用自定义截图存放路径".into());
     }
-    ensure_screen_capture_permission()?;
     let mode = if run_mode.trim().is_empty() {
         "crossover"
     } else {
         run_mode.as_str()
     };
     let target = if screenshot_target.trim() == "focused" {
-        select_focused_window()?
+        select_focused_window().map_err(with_permission_hint)?
     } else {
-        select_target_window(mode, &executable_path)?
+        select_target_window(mode, &executable_path).map_err(with_permission_hint)?
     };
     let dir = instance_screenshot_dir(&executable_path, &custom_screenshot_dir)?;
     capture_to_file(&target, &dir)
@@ -499,8 +576,7 @@ pub fn capture_game_screenshot(
 ) -> Result<GlobalCaptureResult, String> {
     let _ = active_run_mode;
     if !active_instance_id.trim().is_empty() && active_screenshot_target.trim() == "focused" {
-        ensure_screen_capture_permission()?;
-        let target = select_focused_window()?;
+        let target = select_focused_window().map_err(with_permission_hint)?;
         let dir = instance_screenshot_dir(&active_executable_path, &active_screenshot_dir)?;
         let shot = capture_to_file(&target, &dir)?;
         return Ok(GlobalCaptureResult {
@@ -511,10 +587,8 @@ pub fn capture_game_screenshot(
 
     let running = get_running_instances();
     if running.is_empty() {
-        return Err("当前没有正在运行的实例，请先启动游戏".into());
+        return Err("当前没有正在运行的实例。请先启动游戏，或到实例页选中一个启用「当前屏幕焦点的应用」截图的实例后重试".into());
     }
-
-    ensure_screen_capture_permission()?;
 
     if running.len() == 1 {
         let instance = &running[0];
@@ -532,7 +606,7 @@ pub fn capture_game_screenshot(
         .collect();
     if focused_running.len() == 1 {
         let instance = focused_running[0];
-        let target = select_focused_window()?;
+        let target = select_focused_window().map_err(with_permission_hint)?;
         let dir = instance_screenshot_dir(&instance.game_exe, &instance.screenshot_dir)?;
         let shot = capture_to_file(&target, &dir)?;
         return Ok(GlobalCaptureResult {
@@ -588,9 +662,64 @@ pub fn delete_instance_screenshot(
     fs::remove_file(&path).map_err(|e| format!("删除截图失败: {}", e))
 }
 
+/// 打开系统设置的「屏幕录制」面板，方便用户授权
+#[command]
+pub fn open_screen_recording_settings() -> Result<(), String> {
+    Command::new("open")
+        .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
+        .status()
+        .map_err(|e| format!("打开系统设置失败: {}", e))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capture_foreign_window_smoke() {
+        println!("preflight = {}", ScreenCaptureAccess.preflight());
+        let windows = list_on_screen_windows().expect("枚举窗口失败");
+        let mut best: Option<WindowInfo> = None;
+        for w in &windows {
+            if w.owner.eq_ignore_ascii_case("AsumiGal") || SYSTEM_OWNERS.contains(&w.owner.as_str()) {
+                continue;
+            }
+            if w.layer != 0 {
+                continue;
+            }
+            if best.as_ref().map(|b| w.area > b.area).unwrap_or(true) {
+                best = Some(w.clone());
+            }
+        }
+        match best {
+            None => println!("RESULT: 没有可截的普通窗口"),
+            Some(w) => {
+                println!(
+                    "target: owner={} id={} layer={} area={} pid={} bounds={}x{}+{}+{}",
+                    w.owner, w.id, w.layer, w.area, w.pid,
+                    w.bounds.size.width, w.bounds.size.height, w.bounds.origin.x, w.bounds.origin.y
+                );
+                match create_image(
+                    w.bounds,
+                    kCGWindowListOptionIncludingWindow,
+                    w.id,
+                    kCGWindowImageDefault,
+                ) {
+                    None => println!("RESULT: create_image -> None"),
+                    Some(img) => {
+                        let out = std::env::temp_dir().join("asumigal_perm_probe.png");
+                        let r = save_png_image(&img, &out);
+                        let size = fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
+                        println!(
+                            "RESULT: image {}x{}, save={:?}, png_bytes={}, blank={}",
+                            img.width(), img.height(), r, size, image_looks_blank(&img)
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn list_windows_smoke() {

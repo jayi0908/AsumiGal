@@ -213,8 +213,16 @@ function AppContent() {
     }
   };
 
-  // 当前选中的实例（由 InstancesPage 上抛，跨 tab 保持），供全局快捷键截屏读取其截图配置
-  const [activeInstanceId, setActiveInstanceId] = useState<string | null>(null);
+  // 当前选中的实例（由 InstancesPage 上抛，跨 tab 与跨重启保持），供全局快捷键截屏读取其截图配置
+  const [activeInstanceId, setActiveInstanceId] = useState<string | null>(() => {
+    try { return localStorage.getItem("asumigal_active_instance_id"); } catch { return null; }
+  });
+  useEffect(() => {
+    try {
+      if (activeInstanceId) localStorage.setItem("asumigal_active_instance_id", activeInstanceId);
+      else localStorage.removeItem("asumigal_active_instance_id");
+    } catch { /* ignore */ }
+  }, [activeInstanceId]);
   const activeInstance = activeInstanceId ? instances.find(i => i.id === activeInstanceId) : undefined;
 
   const handleGlobalCapture = async () => {
