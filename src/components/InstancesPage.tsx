@@ -237,6 +237,12 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
   const shotExePath = (selectedInstance?.executablePath || formData.executablePath || "").trim();
   const customShotDir = formData.screenshotCustomDir ? (formData.screenshotRootDir || "").trim() : "";
   const shotTarget: 'game' | 'focused' = formData.screenshotTarget === 'focused' ? 'focused' : 'game';
+  // 自定义目录输入防抖：避免逐字符触发列表刷新/目录创建
+  const [debouncedShotDir, setDebouncedShotDir] = useState("");
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedShotDir(customShotDir), 500);
+    return () => clearTimeout(t);
+  }, [customShotDir]);
   const shotSaveDir = (() => {
     if (customShotDir) return customShotDir;
     const p = shotExePath.replace(/\/+$/, "");
@@ -268,7 +274,7 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
       return;
     }
     let active = true;
-    invoke<ScreenshotItem[]>("list_instance_screenshots", { instanceId: selectedId, executablePath: shotExePath, customScreenshotDir: customShotDir })
+    invoke<ScreenshotItem[]>("list_instance_screenshots", { instanceId: selectedId, executablePath: shotExePath, customScreenshotDir: debouncedShotDir })
       .then(list => {
         if (!active) return;
         setScreenshots(list || []);
@@ -280,7 +286,7 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
         setScreenshotsId(selectedId);
       });
     return () => { active = false; };
-  }, [selectedId, shotExePath, customShotDir]);
+  }, [selectedId, shotExePath, debouncedShotDir]);
 
   // 全局快捷键/快捷栏截屏成功事件：刷新当前实例的截图列表
   useEffect(() => {
@@ -564,8 +570,10 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
 
   const fetchGameResults = async (keywords: string[]): Promise<SearchResult[]> => {
     let allResults: SearchResult[] = [];
+    // TouchGal 直连 API 会被 Cloudflare 拦截，必须走隐藏 WebView 桥接（与「发现」页一致）；
+    // KunGal 搜索接口需要登录态，未登录时返回空
     const promises = keywords.flatMap(kw => [
-      invoke<SearchResult[]>('search_game', { keyword: kw, source: 'touchgal' }).catch(() => []),
+      invoke<SearchResult[]>('touchgal_search', { keyword: kw, page: 1 }).catch(() => []),
       invoke<SearchResult[]>('search_game', { keyword: kw, source: 'kungal' }).catch(() => [])
     ]);
     const resultsArrays = await Promise.all(promises);

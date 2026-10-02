@@ -81,18 +81,16 @@ struct WindowInfo {
     layer: i64,
 }
 
-/// 截图保存目录：
-/// - 用户自定义根目录非空 → 直接使用该目录（不存在则创建）
+/// 计算截图保存目录（只解析路径，不创建目录；供列表读取使用）：
+/// - 用户自定义根目录非空 → 该目录
 /// - 否则 → 实例所在文件夹/screen_shots
-fn instance_screenshot_dir(executable_path: &str, custom_root_dir: &str) -> Result<PathBuf, String> {
+fn resolve_screenshot_dir(executable_path: &str, custom_root_dir: &str) -> Result<PathBuf, String> {
     let custom = custom_root_dir.trim();
     if !custom.is_empty() {
         let dir = expand_tilde(custom);
         if dir == Path::new("/") {
             return Err("截图根目录不能为系统根目录 /".into());
         }
-        fs::create_dir_all(&dir)
-            .map_err(|e| format!("创建截图目录失败: {}（目录: {}）", e, dir.display()))?;
         return Ok(dir);
     }
 
@@ -105,7 +103,12 @@ fn instance_screenshot_dir(executable_path: &str, custom_root_dir: &str) -> Resu
         .parent()
         .filter(|p| !p.as_os_str().is_empty() && p.as_os_str() != "/")
         .ok_or_else(|| "无法解析实例所在文件夹".to_string())?;
-    let dir = parent.join(SCREENSHOTS_DIR_NAME);
+    Ok(parent.join(SCREENSHOTS_DIR_NAME))
+}
+
+/// 截图保存目录（不存在则创建；仅供实际写入截图时调用）
+fn instance_screenshot_dir(executable_path: &str, custom_root_dir: &str) -> Result<PathBuf, String> {
+    let dir = resolve_screenshot_dir(executable_path, custom_root_dir)?;
     fs::create_dir_all(&dir)
         .map_err(|e| format!("创建截图目录失败: {}（目录: {}）", e, dir.display()))?;
     Ok(dir)
@@ -471,12 +474,46 @@ fn capture_to_file(
 
 /// 按实例配置选择截屏目标窗口（游戏程序 / 当前焦点应用）
 fn select_target_for_instance(instance: &TrackedInstance) -> Result<WindowInfo, String> {
+    // 优先按追踪到的真实游戏进程匹配窗口（覆盖 Loader 场景）
+    if !instance.real_pids.is_empty() {
+        if let Ok(windows) = list_on_screen_windows() {
+            let matched: Vec<&WindowInfo> = windows
+                .iter()
+                .filter(|w| instance.real_pids.contains(&w.pid))
+                .collect();
+            if let Some(w) = pick_largest(&matched) {
+                return Ok(w);
+            }
+        }
+    }
     let result = if instance.screenshot_target.trim() == "focused" {
         select_focused_window()
     } else {
         select_target_window(&instance.run_mode, &instance.game_exe)
     };
     result.map_err(with_permission_hint)
+}
+
+/// 找出窗口宿主进程实际所属的运行中实例
+fn find_instance_for_window(instances: &[TrackedInstance], pid: u32) -> Option<TrackedInstance> {
+    if pid == 0 {
+        return None;
+    }
+    instances
+        .iter()
+        .find(|i| instance_matches_window_pid(i, pid))
+        .cloned()
+}
+
+/// 判断某个窗口宿主进程是否属于该实例的游戏（含 Loader 追踪到的真实进程）
+fn instance_matches_window_pid(instance: &TrackedInstance, pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    if instance.real_pids.contains(&pid) {
+        return true;
+    }
+    crate::runner::find_game_process_pids(&instance.run_mode, &instance.game_exe).contains(&pid)
 }
 
 /// 将一次截屏存到指定实例的截图目录（自定义或默认），返回截屏信息
@@ -496,7 +533,8 @@ pub fn list_instance_screenshots(
     if instance_id.trim().is_empty() {
         return Ok(Vec::new());
     }
-    let dir = match instance_screenshot_dir(&executable_path, &custom_screenshot_dir) {
+    // 仅解析路径、不创建目录：避免用户输入自定义目录过程中产生一连串目录
+    let dir = match resolve_screenshot_dir(&executable_path, &custom_screenshot_dir) {
         Ok(d) => d,
         Err(_) => return Ok(Vec::new()),
     };
@@ -577,6 +615,16 @@ pub fn capture_game_screenshot(
     let _ = active_run_mode;
     if !active_instance_id.trim().is_empty() && active_screenshot_target.trim() == "focused" {
         let target = select_focused_window().map_err(with_permission_hint)?;
+        // 焦点窗口可能属于另一个正在运行的实例：按进程树归属，存入对应实例的截图目录
+        if let Some(inst) = find_instance_for_window(&get_running_instances(), target.pid) {
+            let dir = instance_screenshot_dir(&inst.game_exe, &inst.screenshot_dir)?;
+            let shot = capture_to_file(&target, &dir)?;
+            return Ok(GlobalCaptureResult {
+                instance_id: Some(inst.instance_id),
+                screenshot: shot,
+            });
+        }
+        // 找不到归属时存入当前选中实例的目录
         let dir = instance_screenshot_dir(&active_executable_path, &active_screenshot_dir)?;
         let shot = capture_to_file(&target, &dir)?;
         return Ok(GlobalCaptureResult {
@@ -599,7 +647,19 @@ pub fn capture_game_screenshot(
         });
     }
 
-    // 多个实例同时运行：若有且仅有一个实例选择了「当前焦点应用」，直接截焦点窗口并归到该实例
+    // 多个实例同时运行：优先把「当前焦点窗口」归属到它实际所属的实例，避免误存到某个选中实例目录
+    if let Ok(target) = select_focused_window() {
+        if let Some(inst) = find_instance_for_window(&running, target.pid) {
+            let dir = instance_screenshot_dir(&inst.game_exe, &inst.screenshot_dir)?;
+            let shot = capture_to_file(&target, &dir)?;
+            return Ok(GlobalCaptureResult {
+                instance_id: Some(inst.instance_id),
+                screenshot: shot,
+            });
+        }
+    }
+
+    // 退而求其次：若有且仅有一个实例选择了「当前焦点应用」，用它
     let focused_running: Vec<&TrackedInstance> = running
         .iter()
         .filter(|i| i.screenshot_target.trim() == "focused")
@@ -657,8 +717,8 @@ pub fn delete_instance_screenshot(
     {
         return Err("无效的截图文件名".into());
     }
-    let path = instance_screenshot_dir(&executable_path, &custom_screenshot_dir)?
-        .join(&file_name);
+    // 删除时只解析路径，不创建目录
+    let path = resolve_screenshot_dir(&executable_path, &custom_screenshot_dir)?.join(&file_name);
     fs::remove_file(&path).map_err(|e| format!("删除截图失败: {}", e))
 }
 

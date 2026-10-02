@@ -36,6 +36,8 @@ struct RunningInstance {
     game_exe: String,
     screenshot_dir: String,
     screenshot_target: String,
+    /// 追踪到的「真正运行的游戏进程」pid（Loader 场景下与 game_exe 不同）
+    real_pids: Vec<u32>,
 }
 
 #[derive(Clone)]
@@ -54,6 +56,8 @@ pub struct TrackedInstance {
     pub screenshot_dir: String,
     /// 截图目标应用："game"（默认）| "focused"
     pub screenshot_target: String,
+    /// 追踪到的「真正运行的游戏进程」pid
+    pub real_pids: Vec<u32>,
 }
 
 pub fn get_running_instances() -> Vec<TrackedInstance> {
@@ -68,6 +72,7 @@ pub fn get_running_instances() -> Vec<TrackedInstance> {
                     game_exe: info.game_exe.clone(),
                     screenshot_dir: info.screenshot_dir.clone(),
                     screenshot_target: info.screenshot_target.clone(),
+                    real_pids: info.real_pids.clone(),
                 })
                 .collect()
         })
@@ -97,8 +102,18 @@ fn track_running_instance(
                 game_exe: game_exe.to_string(),
                 screenshot_dir: screenshot_dir.to_string(),
                 screenshot_target: screenshot_target.to_string(),
+                real_pids: Vec::new(),
             },
         );
+    }
+}
+
+/// 更新某实例追踪到的真实游戏进程 pid
+fn update_running_instance_real_pids(instance_id: &str, pids: Vec<u32>) {
+    if let Ok(mut map) = running_instances().lock() {
+        if let Some(info) = map.get_mut(instance_id) {
+            info.real_pids = pids;
+        }
     }
 }
 
@@ -218,6 +233,48 @@ fn looks_like_windows_game_process(cmd: &str) -> bool {
     let lower = cmd.to_lowercase();
     lower.contains(".exe") && !is_wine_wrapper_command(&lower)
 }
+
+/// 命令行是否为 CrossOver 中的 Windows 程序进程：
+/// 形如 "C:\\...\\game.exe" 或 "winewrapper.exe --run -- ..."，且非 wine 系统目录。
+/// 注意：CrossOver 的 Windows 进程 ppid 均为 1，只能靠命令行匹配来追踪。
+fn looks_like_wine_exe_process(cmd: &str) -> bool {
+    let lower = cmd.to_lowercase();
+    lower.contains(".exe") && !lower.contains("c:\\windows\\") && !lower.contains("wineserver")
+}
+
+/// 命令行是否对应该 exe（macOS 路径、Windows 路径候选或文件名）
+fn wrapper_matches_exe(cmd: &str, exe_path: &Path, win_candidates: &[String]) -> bool {
+    let exe_str = exe_path.to_string_lossy().to_string();
+    if !exe_str.is_empty() && cmd.contains(&exe_str) {
+        return true;
+    }
+    let name_lower = exe_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    if !name_lower.is_empty() && cmd.to_lowercase().contains(&name_lower) {
+        return true;
+    }
+    let cmd_norm = normalize_windows_path_for_match(cmd);
+    win_candidates
+        .iter()
+        .any(|w| !w.is_empty() && cmd_norm.contains(&w.to_lowercase()))
+}
+
+/// 快照当前所有「疑似 Windows 程序」进程 pid（启动前已存在的属于其他会话）
+fn list_existing_wine_exe_pids() -> HashSet<u32> {
+    list_processes()
+        .map(|procs| {
+            procs
+                .into_iter()
+                .filter(|p| looks_like_wine_exe_process(&p.command))
+                .map(|p| p.pid)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 
 /// 定位实际在运行游戏的相关进程树（自身 + 子孙 + 最多 5 层祖先，
 /// 以覆盖 Cider 宿主进程代为绘窗口的场景）。返回空 vec 表示未找到。
@@ -860,7 +917,7 @@ pub async fn launch_game(app: AppHandle, instance_id: String, config: WineConfig
     }
 
     // 启动子进程
-    let mut child = cmd.spawn().map_err(|e| format!("启动失败: {}", e))?;
+    let child = cmd.spawn().map_err(|e| format!("启动失败: {}", e))?;
     let pid = child.id();
     let exe_for_track = game_path.to_string_lossy().to_string();
     track_running_instance(
@@ -875,21 +932,93 @@ pub async fn launch_game(app: AppHandle, instance_id: String, config: WineConfig
     if !config.dry_run_active.unwrap_or(false) {
         let app_handle = app.clone();
         let i_id = instance_id.clone();
-        
+        let loader_path = game_path.clone();
+        let thread_bottle = bottle_path_buf.clone();
+
         thread::spawn(move || {
+            let mut child = child;
             let start_time = Instant::now();
-            match child.wait() {
-                Ok(status) => {
-                    let duration = start_time.elapsed().as_secs();
-                    println!("游戏 {} 已退出，状态: {}, 时长: {}秒", i_id, status, duration);
-                    remove_running_instance(&i_id);
-                    let _ = app_handle.emit("game-finished", GameFinishedPayload {
-                        instance_id: i_id,
-                        duration_sec: duration
-                    });
+            let loader_win_candidates: Vec<String> =
+                build_wine_windows_path_candidates(&loader_path, &thread_bottle)
+                    .into_iter()
+                    .map(|p| normalize_windows_path_for_match(&p))
+                    .collect();
+            // 启动前已存在的 Windows 进程属于其他会话，排除
+            let pre_exe_pids = list_existing_wine_exe_pids();
+            let mut real_pids: HashSet<u32> = HashSet::new();
+            let mut continue_logged = false;
+
+            // 轮询扫描：找出本次会话真正运行的游戏进程
+            // - launcher（Loader）自身通过命令行匹配排除
+            // - 其余非系统（非 C:\windows\...）的 .exe 进程视为真正运行的游戏
+            // Loader 退出后只要真实游戏进程还在，就继续计时与追踪
+            loop {
+                let processes = list_processes().unwrap_or_default();
+                let alive: HashSet<u32> = processes.iter().map(|p| p.pid).collect();
+                real_pids.retain(|p| alive.contains(p));
+
+                let other_exe_names: Vec<String> = get_running_instances()
+                    .into_iter()
+                    .filter(|i| i.instance_id != i_id)
+                    .filter_map(|i| {
+                        Path::new(&i.game_exe)
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_lowercase())
+                    })
+                    .filter(|n| !n.is_empty())
+                    .collect();
+
+                let mut loader_alive = false;
+                for p in &processes {
+                    if !looks_like_wine_exe_process(&p.command) {
+                        continue;
+                    }
+                    // 先判定 launcher（Loader），避免被“启动前快照”误排除
+                    if wrapper_matches_exe(&p.command, &loader_path, &loader_win_candidates) {
+                        loader_alive = true;
+                        continue;
+                    }
+                    if pre_exe_pids.contains(&p.pid) {
+                        continue;
+                    }
+                    let cmd_lower = p.command.to_lowercase();
+                    // 排除其他实例的游戏进程
+                    if other_exe_names.iter().any(|n| cmd_lower.contains(n)) {
+                        continue;
+                    }
+                    real_pids.insert(p.pid);
                 }
-                Err(e) => println!("等待进程失败: {}", e),
+
+                update_running_instance_real_pids(&i_id, real_pids.iter().copied().collect());
+
+                let child_exited = match child.try_wait() {
+                    Ok(Some(_)) => true,
+                    Ok(None) => false,
+                    Err(_) => true,
+                };
+
+                if !loader_alive && !real_pids.is_empty() && !continue_logged {
+                    continue_logged = true;
+                    println!(
+                        "实例 {} 的 Loader 已退出，继续追踪真实游戏进程 {:?}（计时延续）",
+                        i_id, real_pids
+                    );
+                }
+
+                if child_exited && !loader_alive && real_pids.is_empty() {
+                    break;
+                }
+
+                thread::sleep(std::time::Duration::from_millis(1000));
             }
+
+            let duration = start_time.elapsed().as_secs();
+            println!("游戏 {} 完全退出，时长: {}秒", i_id, duration);
+            remove_running_instance(&i_id);
+            let _ = app_handle.emit("game-finished", GameFinishedPayload {
+                instance_id: i_id,
+                duration_sec: duration,
+            });
         });
     }
 
@@ -920,13 +1049,63 @@ pub async fn stop_game(instance_id: String, config: WineConfig) -> Result<Vec<u3
         .map(|i| PathBuf::from(&i.game_exe))
         .unwrap_or_else(|| expand_tilde(&config.game_exe));
 
-    let killed = if mode == "direct" {
+    let mut killed = if mode == "direct" {
         stop_direct_instance(launcher_pid, &exe_path, &processes)?
     } else {
         let bottle_path = expand_tilde(&config.bottle_path);
         stop_crossover_instance(launcher_pid, &exe_path, &bottle_path, &processes)?
     };
 
+    // Loader 场景：真正运行的游戏进程与 launcher 不同，直接终止追踪到的真实进程
+    if let Some(info) = tracked.as_ref() {
+        if !info.real_pids.is_empty() {
+            for pid in terminate_pids(info.real_pids.clone()) {
+                if !killed.contains(&pid) {
+                    killed.push(pid);
+                }
+            }
+        }
+    }
+
     remove_running_instance(&instance_id);
     Ok(killed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wine_process_classification() {
+        // 真实游戏进程（Windows 路径，非系统目录）
+        assert!(looks_like_wine_exe_process(r"Z:\Volumes\Jayi\games\Game\real.exe"));
+        // wine wrapper 形式的真实游戏
+        assert!(looks_like_wine_exe_process(
+            "/Applications/CrossOver.app/Contents/SharedSupport/CrossOver/lib/wine/x86_64-windows/winewrapper.exe --run -- /Volumes/Jayi/games/Game/real.exe"
+        ));
+        // wine 系统进程应排除
+        assert!(!looks_like_wine_exe_process(r"C:\windows\system32\services.exe"));
+        assert!(!looks_like_wine_exe_process(r"C:\windows\system32\conhost.exe --server 0x30"));
+        // 非 exe 进程
+        assert!(!looks_like_wine_exe_process("wineserver -p"));
+    }
+
+    #[test]
+    fn loader_matching() {
+        let loader = Path::new("/Volumes/Jayi/games/OusamaRenai/OusamaRenai_cn.exe");
+        // 直接以 macOS 路径出现在 wrapper 里
+        assert!(wrapper_matches_exe(
+            "/Applications/CrossOver.app/Contents/SharedSupport/CrossOver/lib/wine/x86_64-windows/winewrapper.exe --run -- /Volumes/Jayi/games/OusamaRenai/OusamaRenai_cn.exe",
+            loader,
+            &[]
+        ));
+        // 以 Windows 路径/文件名出现
+        assert!(wrapper_matches_exe(r"Z:\Volumes\Jayi\games\OusamaRenai\OusamaRenai_cn.exe", loader, &[]));
+        // 另一个程序不应匹配 loader
+        assert!(!wrapper_matches_exe(
+            "/Applications/CrossOver.app/Contents/SharedSupport/CrossOver/lib/wine/x86_64-windows/winewrapper.exe --run -- /Volumes/Jayi/games/OusamaRenai/real_game.exe",
+            loader,
+            &[]
+        ));
+    }
 }

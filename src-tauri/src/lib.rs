@@ -561,9 +561,9 @@ fn get_directory_keywords(path: String) -> Result<Vec<String>, String> {
         }
     }
 
-    // 排序并去重
-    keywords.sort();
-    keywords.dedup();
+    // 去重并保持「目录名优先」的顺序（目录名最能代表游戏作品名）
+    let mut seen = std::collections::HashSet::new();
+    keywords.retain(|k| !k.trim().is_empty() && seen.insert(k.clone()));
     Ok(keywords)
 }
 
