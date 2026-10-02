@@ -44,3 +44,7 @@ base64 = "0.22"
 core-graphics = "0.23"
 core-foundation = "0.9"
 foreign-types-shared = "0.3"
+# 进程存活检查（kill(pid, 0)）
+libc = "0.2"
+# 单实例：把命令行调用的参数转发给已运行实例
+tauri-plugin-single-instance = "2"

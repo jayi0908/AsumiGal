@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use tauri::{AppHandle, Emitter, Manager, command};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use std::thread;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
@@ -260,6 +260,14 @@ fn wrapper_matches_exe(cmd: &str, exe_path: &Path, win_candidates: &[String]) ->
     win_candidates
         .iter()
         .any(|w| !w.is_empty() && cmd_norm.contains(&w.to_lowercase()))
+}
+
+/// 进程是否存活（kill(pid, 0)，不读取进程表，开销极小）
+fn process_alive(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
 }
 
 /// 快照当前所有「疑似 Windows 程序」进程 pid（启动前已存在的属于其他会话）
@@ -945,59 +953,70 @@ pub async fn launch_game(app: AppHandle, instance_id: String, config: WineConfig
                     .collect();
             // 启动前已存在的 Windows 进程属于其他会话，排除
             let pre_exe_pids = list_existing_wine_exe_pids();
+            let mut loader_pids: HashSet<u32> = HashSet::new();
             let mut real_pids: HashSet<u32> = HashSet::new();
             let mut continue_logged = false;
+            let mut empty_confirmations = 0u32;
 
-            // 轮询扫描：找出本次会话真正运行的游戏进程
-            // - launcher（Loader）自身通过命令行匹配排除
-            // - 其余非系统（非 C:\windows\...）的 .exe 进程视为真正运行的游戏
-            // Loader 退出后只要真实游戏进程还在，就继续计时与追踪
+            // 内存/CPU 优化：仅在需要时做全量进程扫描，其余时间用 kill(pid,0) 做存活检查
+            // - 每 3s 全量扫描一次（发现真实游戏 / 刷新 loader 存活）
+            // - 每 1s 廉价存活检查
+            // - 追踪集合为空时立即全量扫描确认（避免漏掉刚启动的真实游戏）
+            let scan_interval = Duration::from_secs(3);
+            let tick = Duration::from_secs(1);
+            let mut last_scan: Option<Instant> = None;
+
             loop {
-                let processes = list_processes().unwrap_or_default();
-                let alive: HashSet<u32> = processes.iter().map(|p| p.pid).collect();
-                real_pids.retain(|p| alive.contains(p));
+                let tracked_empty = loader_pids.is_empty() && real_pids.is_empty();
+                let scan_due = last_scan
+                    .map(|t| t.elapsed() >= scan_interval)
+                    .unwrap_or(true);
 
-                let other_exe_names: Vec<String> = get_running_instances()
-                    .into_iter()
-                    .filter(|i| i.instance_id != i_id)
-                    .filter_map(|i| {
-                        Path::new(&i.game_exe)
-                            .file_name()
-                            .map(|n| n.to_string_lossy().to_lowercase())
-                    })
-                    .filter(|n| !n.is_empty())
-                    .collect();
+                if scan_due || tracked_empty {
+                    let processes = list_processes().unwrap_or_default();
+                    let alive: HashSet<u32> = processes.iter().map(|p| p.pid).collect();
+                    loader_pids.retain(|p| alive.contains(p));
+                    real_pids.retain(|p| alive.contains(p));
 
-                let mut loader_alive = false;
-                for p in &processes {
-                    if !looks_like_wine_exe_process(&p.command) {
-                        continue;
+                    let other_exe_names: Vec<String> = get_running_instances()
+                        .into_iter()
+                        .filter(|i| i.instance_id != i_id)
+                        .filter_map(|i| {
+                            Path::new(&i.game_exe)
+                                .file_name()
+                                .map(|n| n.to_string_lossy().to_lowercase())
+                        })
+                        .filter(|n| !n.is_empty())
+                        .collect();
+
+                    for p in &processes {
+                        if !looks_like_wine_exe_process(&p.command) {
+                            continue;
+                        }
+                        // 先判定 launcher（Loader），避免被“启动前快照”误排除
+                        if wrapper_matches_exe(&p.command, &loader_path, &loader_win_candidates) {
+                            loader_pids.insert(p.pid);
+                            continue;
+                        }
+                        if pre_exe_pids.contains(&p.pid) {
+                            continue;
+                        }
+                        let cmd_lower = p.command.to_lowercase();
+                        // 排除其他实例的游戏进程
+                        if other_exe_names.iter().any(|n| cmd_lower.contains(n)) {
+                            continue;
+                        }
+                        real_pids.insert(p.pid);
                     }
-                    // 先判定 launcher（Loader），避免被“启动前快照”误排除
-                    if wrapper_matches_exe(&p.command, &loader_path, &loader_win_candidates) {
-                        loader_alive = true;
-                        continue;
-                    }
-                    if pre_exe_pids.contains(&p.pid) {
-                        continue;
-                    }
-                    let cmd_lower = p.command.to_lowercase();
-                    // 排除其他实例的游戏进程
-                    if other_exe_names.iter().any(|n| cmd_lower.contains(n)) {
-                        continue;
-                    }
-                    real_pids.insert(p.pid);
+                    last_scan = Some(Instant::now());
+                } else {
+                    loader_pids.retain(|p| process_alive(*p));
+                    real_pids.retain(|p| process_alive(*p));
                 }
 
                 update_running_instance_real_pids(&i_id, real_pids.iter().copied().collect());
 
-                let child_exited = match child.try_wait() {
-                    Ok(Some(_)) => true,
-                    Ok(None) => false,
-                    Err(_) => true,
-                };
-
-                if !loader_alive && !real_pids.is_empty() && !continue_logged {
+                if !continue_logged && loader_pids.is_empty() && !real_pids.is_empty() {
                     continue_logged = true;
                     println!(
                         "实例 {} 的 Loader 已退出，继续追踪真实游戏进程 {:?}（计时延续）",
@@ -1005,11 +1024,23 @@ pub async fn launch_game(app: AppHandle, instance_id: String, config: WineConfig
                     );
                 }
 
-                if child_exited && !loader_alive && real_pids.is_empty() {
-                    break;
+                let child_exited = match child.try_wait() {
+                    Ok(Some(_)) => true,
+                    Ok(None) => false,
+                    Err(_) => true,
+                };
+
+                if child_exited && loader_pids.is_empty() && real_pids.is_empty() {
+                    // 连续两次确认为空后再结束，给刚启动的真实游戏留出发现时间
+                    empty_confirmations += 1;
+                    if empty_confirmations >= 2 {
+                        break;
+                    }
+                } else {
+                    empty_confirmations = 0;
                 }
 
-                thread::sleep(std::time::Duration::from_millis(1000));
+                thread::sleep(tick);
             }
 
             let duration = start_time.elapsed().as_secs();

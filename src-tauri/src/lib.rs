@@ -1,4 +1,4 @@
-use tauri::{command, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{command, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial};
 use font_kit::source::SystemSource;
 use std::path::{Path, PathBuf};
@@ -8,9 +8,18 @@ use std::fs;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+mod cli;
 mod runner;
 mod screenshot;
 mod storage;
+
+/// 冷启动时解析出的、等待前端就绪后执行的外部命令行命令
+struct PendingCli(Mutex<Option<cli::CliCommand>>);
+
+#[command]
+fn take_cli_command(state: tauri::State<PendingCli>) -> Option<cli::CliCommand> {
+    state.0.lock().ok().and_then(|mut g| g.take())
+}
 
 // --- 统一的搜索结果结构 ---
 #[derive(Debug, Serialize, Deserialize)]
@@ -741,8 +750,26 @@ async fn migrate_game_files(payload: MigrateGameFilesPayload) -> Result<MigrateG
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // 外部命令行调用：--help / --list 直接处理并退出（不启动界面）
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(code) = cli::try_run_standalone(&args) {
+        std::process::exit(code);
+    }
+    let pending_cli = cli::parse_gui_command(&args);
+
     tauri::Builder::default()
         .manage(TouchGalState::default())
+        .manage(PendingCli(Mutex::new(pending_cli)))
+        // 单实例：二次调用时把命令行参数转发给已运行实例（必须最先注册）
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            if let Some(cmd) = cli::parse_gui_command(&argv) {
+                let _ = app.emit("cli-command", cmd);
+            }
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.show();
+                let _ = w.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
@@ -770,7 +797,8 @@ pub fn run() {
             get_directory_keywords,
             scan_game_directories,
             get_pd_vms,
-            migrate_game_files
+            migrate_game_files,
+            take_cli_command
         ])
         .setup(|app| {
             // 获取主窗口

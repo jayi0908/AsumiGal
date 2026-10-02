@@ -212,6 +212,8 @@ function AppContent() {
       showToast(`${error}`, "error");
     }
   };
+  const handleLaunchRef = useRef(handleLaunch);
+  handleLaunchRef.current = handleLaunch;
 
   // 当前选中的实例（由 InstancesPage 上抛，跨 tab 与跨重启保持），供全局快捷键截屏读取其截图配置
   const [activeInstanceId, setActiveInstanceId] = useState<string | null>(() => {
@@ -278,6 +280,43 @@ function AppContent() {
       unregisterAll().catch(() => {});
     };
   }, [config.screenshotShortcut, shortcutRev]);
+
+  // ===== 外部命令行调用（CLI）=====
+  // 冷启动：从后端取待处理命令；热启动：监听二次调用转发来的事件
+  const [cliPending, setCliPending] = useState<{ action: string; target?: string } | null>(null);
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    invoke<{ action: string; target?: string } | null>("take_cli_command")
+      .then(cmd => { if (cmd) setCliPending(cmd); })
+      .catch(() => {});
+    listen<{ action: string; target?: string }>("cli-command", (e) => {
+      setCliPending(e.payload);
+    }).then(un => { unlisten = un; });
+    return () => { if (unlisten) unlisten(); };
+  }, []);
+
+  useEffect(() => {
+    if (!cliPending) return;
+    if (cliPending.action === "screenshot") {
+      setCliPending(null);
+      globalCaptureRef.current();
+      return;
+    }
+    if (cliPending.action === "launch" && cliPending.target) {
+      const t = cliPending.target;
+      const inst = instances.find(i => i.id === t)
+        || instances.find(i => i.name === t)
+        || instances.find(i => i.name.includes(t));
+      if (inst) {
+        setCliPending(null);
+        handleLaunchRef.current(inst);
+      } else if (instances.length > 0) {
+        setCliPending(null);
+        showToast(`未找到实例：${t}`, "error");
+      }
+      // 实例列表尚未加载完成时保留 pending，待 instances 就绪后再处理
+    }
+  }, [cliPending, instances]);
 
   const handleStop = async (instance: GameInstance) => {
     try {

@@ -441,6 +441,8 @@ fn capture_to_file(
     dir: &Path,
 ) -> Result<ScreenshotInfo, String> {
     let out_path = next_file_path(dir);
+    // 仅在授权状态不确定时才做「全黑图」检测：该检测会整幅拷贝图像数据，较占内存
+    let permission_ok = ScreenCaptureAccess.preflight();
     let image = create_image(
         target.bounds,
         kCGWindowListOptionIncludingWindow,
@@ -450,7 +452,7 @@ fn capture_to_file(
     .ok_or_else(|| {
         with_permission_hint("窗口捕获失败，窗口可能已隐藏或位于其他桌面/空间".to_string())
     })?;
-    if image_looks_blank(&image) {
+    if !permission_ok && image_looks_blank(&image) {
         return Err(with_permission_hint(format!(
             "截取到空白画面（{}），窗口可能已最小化、被遮挡，或未授予屏幕录制权限",
             target.owner
