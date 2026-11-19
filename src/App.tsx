@@ -4,11 +4,11 @@ import { LaunchControl } from "./components/LaunchControl";
 import { InstancesPage, GameInstance } from "./components/InstancesPage";
 import { DiscoveryPage } from "./components/DiscoveryPage";
 import { SettingsPage } from "./components/SettingsPage";
-import { invoke } from "@tauri-apps/api/core";
 import { ToastProvider, useToast } from "./components/ToastProvider";
 import { useTheme, ThemeProvider } from "./contexts/ThemeContext";
 import { listen } from "@tauri-apps/api/event";
 import { register, unregisterAll } from "@tauri-apps/plugin-global-shortcut";
+import { BackendService } from "./services/backend";
 
 const INITIAL_INSTANCES: GameInstance[] = [];
 
@@ -40,8 +40,7 @@ function AppContent() {
   const loadInstancesData = async (isManual = false) => {
     try {
       console.log("正在从后端读取实例数据...");
-      const jsonString = await invoke<string>("load_instances");
-      const loadedData = JSON.parse(jsonString);
+      const loadedData = await BackendService.loadInstances();
 
       if (Array.isArray(loadedData)) {
         const sorted = sortInstances(loadedData);
@@ -69,12 +68,12 @@ function AppContent() {
     const sorted = sortInstances(newInstances);
     setInstances(sorted);
     try {
-      await invoke("save_instances", { data: JSON.stringify(sorted, null, 2) });
+      await BackendService.saveInstances(sorted);
     } catch (e) { console.error(e); }
   };
 
   const saveInstancesSnapshot = useCallback((list: GameInstance[]) => {
-    invoke("save_instances", { data: JSON.stringify(list, null, 2) }).catch((e) => console.error(e));
+    BackendService.saveInstances(list).catch((e) => console.error(e));
   }, []);
 
   const handleToggleDryRun = useCallback((instanceId: string) => {
@@ -164,7 +163,7 @@ function AppContent() {
           return inst;
         });
         
-        invoke("save_instances", { data: JSON.stringify(newInstances, null, 2) });
+        BackendService.saveInstances(newInstances).catch((e) => console.error(e));
         return newInstances;
       });
     });
@@ -182,29 +181,29 @@ function AppContent() {
         : instance.runMode === 'direct'
           ? instance.bottleName
           : `${config.bottlesPath}/${instance.bottleName}`;
-      const response = await invoke("launch_game", {
-        instanceId: instance.id,
-        config: {
-          bottle_path: bottlePath,
-          game_exe: instance.executablePath,
-          crossover_app_path: config.crossoverPath,
-          run_mode: instance.runMode || 'crossover',
-          dry_run_active: isDryRun,
-          command_args: instance.commandArgs || '',
-          env_vars: instance.envVars || '',
-          work_dir: instance.workDir || '',
-          screenshot_dir: instance.screenshotCustomDir ? (instance.screenshotRootDir || '').trim() : '',
-          screenshot_target: instance.screenshotTarget === 'focused' ? 'focused' : 'game'
-        }
+      const response = await BackendService.launchGame(instance.id, {
+        bottle_path: bottlePath,
+        game_exe: instance.executablePath,
+        crossover_app_path: config.crossoverPath,
+        run_mode: instance.runMode || 'crossover',
+        dry_run_active: isDryRun,
+        command_args: instance.commandArgs || '',
+        env_vars: instance.envVars || '',
+        work_dir: instance.workDir || '',
+        screenshot_dir: instance.screenshotCustomDir ? (instance.screenshotRootDir || '').trim() : '',
+        screenshot_target: instance.screenshotTarget === 'focused' ? 'focused' : 'game'
       });
       showToast(`${instance.name} 启动成功 (PID: ${response})`, "success");
+
+      // 启动后将该实例设为「当前实例」，使全局截图在无法从焦点窗口归属时也能落到刚启动的实例目录
+      setActiveInstanceId(instance.id);
 
       setInstances((prev) => {
         const now = Date.now();
         const sorted = prev.map((i) =>
           i.id === instance.id ? { ...i, lastPlayed: now } : i
         ).sort((a, b) => (b.lastPlayed || 0) - (a.lastPlayed || 0));
-        invoke("save_instances", { data: JSON.stringify(sorted, null, 2) }).catch((e) => console.error(e));
+        BackendService.saveInstances(sorted).catch((e) => console.error(e));
         return sorted;
       });
     } catch (error) {
@@ -229,16 +228,13 @@ function AppContent() {
 
   const handleGlobalCapture = async () => {
     try {
-      const res = await invoke<{ instanceId: string | null; screenshot: { fileName: string; file_path?: string; filePath?: string } }>(
-        "capture_game_screenshot",
-        {
-          activeInstanceId: activeInstance?.id || "",
-          activeRunMode: activeInstance?.runMode || "crossover",
-          activeExecutablePath: activeInstance?.executablePath || "",
-          activeScreenshotDir: activeInstance?.screenshotCustomDir ? (activeInstance.screenshotRootDir || "").trim() : "",
-          activeScreenshotTarget: activeInstance?.screenshotTarget === "focused" ? "focused" : "game"
-        }
-      );
+      const res = await BackendService.captureGameScreenshot({
+        activeInstanceId: activeInstance?.id || "",
+        activeRunMode: activeInstance?.runMode || "crossover",
+        activeExecutablePath: activeInstance?.executablePath || "",
+        activeScreenshotDir: activeInstance?.screenshotCustomDir ? (activeInstance.screenshotRootDir || "").trim() : "",
+        activeScreenshotTarget: activeInstance?.screenshotTarget === "focused" ? "focused" : "game"
+      });
       const name = res.instanceId ? instances.find(i => i.id === res.instanceId)?.name : null;
       showToast(`${name ? name + " " : ""}截图已保存`, "success");
       window.dispatchEvent(new CustomEvent("asumigal-screenshots-changed", { detail: { instanceId: res.instanceId } }));
@@ -286,7 +282,7 @@ function AppContent() {
   const [cliPending, setCliPending] = useState<{ action: string; target?: string } | null>(null);
   useEffect(() => {
     let unlisten: (() => void) | undefined;
-    invoke<{ action: string; target?: string } | null>("take_cli_command")
+    BackendService.takeCliCommand()
       .then(cmd => { if (cmd) setCliPending(cmd); })
       .catch(() => {});
     listen<{ action: string; target?: string }>("cli-command", (e) => {
@@ -325,17 +321,14 @@ function AppContent() {
         : instance.runMode === 'direct'
           ? instance.bottleName
           : `${config.bottlesPath}/${instance.bottleName}`;
-      const killedPids = await invoke<number[]>("stop_game", {
-        instanceId: instance.id,
-        config: {
-          bottle_path: bottlePath,
-          game_exe: instance.executablePath,
-          crossover_app_path: config.crossoverPath,
-          run_mode: instance.runMode || 'crossover',
-          command_args: instance.commandArgs || '',
-          env_vars: instance.envVars || '',
-          work_dir: instance.workDir || ''
-        }
+      const killedPids = await BackendService.stopGame(instance.id, {
+        bottle_path: bottlePath,
+        game_exe: instance.executablePath,
+        crossover_app_path: config.crossoverPath,
+        run_mode: instance.runMode || 'crossover',
+        command_args: instance.commandArgs || '',
+        env_vars: instance.envVars || '',
+        work_dir: instance.workDir || ''
       });
 
       const pidsText = Array.isArray(killedPids) && killedPids.length > 0
@@ -348,19 +341,20 @@ function AppContent() {
     }
   };
 
-  const currentDisplayInstance = instances.length > 0 ? instances[0] : undefined;
+  const currentDisplayInstance = activeInstance || (instances.length > 0 ? instances[0] : undefined);
 
   return (
     <Layout 
       activeTab={activeTab} 
       setActiveTab={setActiveTab}
-      // 传递当前选中的实例（暂时默认第一个，或者你可以增加一个 selectedInstanceId 的 state）
       currentInstance={currentDisplayInstance} 
       bgImage="https://images.unsplash.com/photo-1518709268805-4e9042af9f23?q=80&w=2568&auto=format&fit=crop"
       onRefresh={() => loadInstancesData(true)} 
       bottomAction={
         <LaunchControl 
           instances={instances} 
+          selectedId={currentDisplayInstance?.id}
+          onSelectInstance={setActiveInstanceId}
           onLaunch={handleLaunch} 
           onGoToSettings={(instance) => {
             setInstanceSettingsTargetId(instance.id);

@@ -9,6 +9,8 @@ import liquidGlassStyles from "../styles/liquid-glass.module.css";
 
 interface LaunchControlProps {
   instances: GameInstance[];
+  selectedId?: string | null;
+  onSelectInstance?: (id: string) => void;
   onLaunch: (instance: GameInstance) => void;
   onGoToSettings: (instance: GameInstance) => void;
   onStop: (instance: GameInstance) => void;
@@ -17,11 +19,25 @@ interface LaunchControlProps {
   onToggleDryRun: (instanceId: string) => void;
 }
 
-export function LaunchControl({ instances, onLaunch, onGoToSettings, onStop, dryRunActive, dryRunInstanceId, onToggleDryRun }: LaunchControlProps) {
+export function LaunchControl({
+  instances,
+  selectedId: controlledSelectedId,
+  onSelectInstance,
+  onLaunch,
+  onGoToSettings,
+  onStop,
+  dryRunActive,
+  dryRunInstanceId,
+  onToggleDryRun,
+}: LaunchControlProps) {
   const { currentTheme } = useTheme();
   const [isOpen, setIsOpen] = useState(false);
-  // 简单起见，首页默认选第一个，或者你可以从 localStorage 读取上次选的
-  const [selectedId, setSelectedId] = useState(instances[0]?.id);
+  const [internalSelectedId, setInternalSelectedId] = useState(instances[0]?.id);
+  const selectedId = controlledSelectedId ?? internalSelectedId ?? instances[0]?.id;
+  const setSelectedId = (id: string) => {
+    setInternalSelectedId(id);
+    onSelectInstance?.(id);
+  };
   const currentInstance = instances.find((i) => i.id === selectedId) || instances[0];
 
   // 格式化时间辅助函数

@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, type ReactNode } from "react";
 import { Plus, Box, Boxes, Save, Trash2, FolderOpen, Play, Settings, Search, X, Loader2, ArrowLeft, ArrowLeftRight, Image as ImageIcon, ChevronDown, CheckCircle, AlertCircle, FileCode2, HardDrive, Laptop, Star, Gamepad2, Flag, ArrowDownWideNarrow, SlidersHorizontal, List, LayoutGrid, Ellipsis, Pencil, Camera, Info, Monitor } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { invoke, convertFileSrc } from "@tauri-apps/api/core";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { motion, AnimatePresence } from "framer-motion";
 import { useToast } from "./ToastProvider";
@@ -9,61 +9,11 @@ import { DeleteModal } from "./DeleteModal";
 import { useTheme } from "../contexts/ThemeContext";
 import { Tooltip } from "./Tooltip";
 import { SidebarNavItem } from "./SidebarNavItem";
+import { BackendService } from "../services/backend";
+import { GameInstance, SearchResult, ScreenshotItem, BatchItem, GameFileStatus } from "../types/instance";
 import clsx from "clsx";
 
-export interface GameInstance {
-  id: string;
-  name: string;
-  info: string;
-  bottleName: string;
-  executablePath: string;
-  backgroundImage?: string;
-  lastPlayed?: number;
-  totalPlayTime?: number;
-  playHistory?: Record<string, number>;
-  runMode?: 'crossover' | 'parallels' | 'direct';
-  gameFileStatus?: 'disk' | 'local';
-  diskGameRoot?: string;
-  localGameRoot?: string;
-  gameRelativeDir?: string;
-  commandArgs?: string;
-  envVars?: string;
-  workDir?: string;
-  isStarred?: boolean;
-  isPlaying?: boolean;
-  isFinished?: boolean;
-  screenshotCustomDir?: boolean;
-  screenshotRootDir?: string;
-  screenshotTarget?: 'game' | 'focused';
-}
-
-interface SearchResult {
-  id: string;
-  title: string;
-  cover: string;
-  source: string;
-  url: string;
-}
-
-interface ScreenshotItem {
-  fileName: string;
-  filePath: string;
-  time: number;
-}
-
-interface BatchItem {
-  id: string;
-  selected: boolean;
-  dirName: string;
-  executables: string[];
-  selectedExec: string;
-  runMode: 'crossover' | 'parallels' | 'direct';
-  bottleName: string;
-  status: 'pending' | 'matching' | 'matched' | 'unmatched';
-  matchedResult: SearchResult | null;
-  searchResults: SearchResult[];
-  manualInfo: Partial<GameInstance>;
-}
+export type { GameInstance } from "../types/instance";
 
 interface InstancesPageProps {
   instances: GameInstance[];
@@ -77,7 +27,6 @@ interface InstancesPageProps {
 }
 
 type ImportState = 'none' | 'choice' | 'search_params' | 'search_results' | 'manual_form';
-type GameFileStatus = 'disk' | 'local';
 type ViewMode = 'list' | 'grid';
 type SortMode = 'recent' | 'name';
 type DetailTab = 'basic' | 'launch' | 'screenshots';
@@ -253,7 +202,7 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
 
   const loadScreenshots = async (id: string, exePath: string, customDir: string) => {
     try {
-      const list = await invoke<ScreenshotItem[]>("list_instance_screenshots", { instanceId: id, executablePath: exePath, customScreenshotDir: customDir });
+      const list = await BackendService.listInstanceScreenshots(id, exePath, customDir);
       setScreenshots(list || []);
       setScreenshotsId(id);
     } catch (e) {
@@ -264,7 +213,9 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
 
   // 上抛当前选中实例，供全局快捷键截屏读取其截图配置（跨 tab 保持）
   useEffect(() => {
-    onActiveInstanceIdChange?.(selectedId);
+    if (selectedId) {
+      onActiveInstanceIdChange?.(selectedId);
+    }
   }, [selectedId, onActiveInstanceIdChange]);
 
   useEffect(() => {
@@ -274,7 +225,7 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
       return;
     }
     let active = true;
-    invoke<ScreenshotItem[]>("list_instance_screenshots", { instanceId: selectedId, executablePath: shotExePath, customScreenshotDir: debouncedShotDir })
+    BackendService.listInstanceScreenshots(selectedId, shotExePath, debouncedShotDir)
       .then(list => {
         if (!active) return;
         setScreenshots(list || []);
@@ -308,7 +259,7 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
     const execPath = formData.executablePath || inst?.executablePath || '';
     setIsCapturing(true);
     try {
-      const shot = await invoke<ScreenshotItem>("capture_instance_screenshot", {
+      const shot = await BackendService.captureInstanceScreenshot({
         instanceId: selectedId,
         runMode: mode,
         executablePath: execPath,
@@ -329,7 +280,7 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
     if (!selectedId) return;
     setIsDeletingShot(true);
     try {
-      await invoke("delete_instance_screenshot", { instanceId: selectedId, executablePath: shotExePath, customScreenshotDir: customShotDir, fileName: shot.fileName });
+      await BackendService.deleteInstanceScreenshot({ instanceId: selectedId, executablePath: shotExePath, customScreenshotDir: customShotDir, fileName: shot.fileName });
       setScreenshots(prev => prev.filter(s => s.fileName !== shot.fileName));
       setPreviewShot(null);
       showToast("截图已删除", "success");
@@ -449,18 +400,13 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
     setIsMigratingGameFiles(true);
     await new Promise((resolve) => setTimeout(resolve, 100));
     try {
-      const result = await invoke<{
-        new_executable_path: string;
-        new_status: GameFileStatus;
-      }>("migrate_game_files", {
-        payload: {
-          instance_id: payloadSnapshot.instanceId,
-          game_file_status: payloadSnapshot.gameFileStatus,
-          disk_game_root: payloadSnapshot.diskGameRoot,
-          local_game_root: payloadSnapshot.localGameRoot,
-          game_relative_dir: payloadSnapshot.gameRelativeDir,
-          executable_path: payloadSnapshot.executablePath,
-        }
+      const result = await BackendService.migrateGameFiles({
+        instance_id: payloadSnapshot.instanceId,
+        game_file_status: payloadSnapshot.gameFileStatus,
+        disk_game_root: payloadSnapshot.diskGameRoot,
+        local_game_root: payloadSnapshot.localGameRoot,
+        game_relative_dir: payloadSnapshot.gameRelativeDir,
+        executable_path: payloadSnapshot.executablePath,
       });
 
       const updatedFormData: Partial<GameInstance> = {
@@ -494,7 +440,7 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
 
   const fetchContainers = async () => {
     try {
-      const res = await invoke<string[]>("get_crossover_bottles", { path: config.bottlesPath });
+      const res = await BackendService.getCrossoverBottles(config.bottlesPath);
       const validBottles = res.length > 0 ? res : ["Default"];
       setBottles(validBottles);
       if (!validBottles.includes(config.defaultBottle)) {
@@ -503,13 +449,12 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
     } catch (e) { setBottles(["Default"]); }
     
     try {
-      // @ts-ignore
-      const res = await invoke<string[]>("get_pd_vms", { path: config.pdPath || '~/Applications (Parallels)' });
+      const res = await BackendService.getPdVms(config.pdPath || '~/Applications (Parallels)');
       setPdVms(res.length > 0 ? res : []);
     } catch (e) { setPdVms([]); }
 
     try {
-      const res = await invoke<string[]>("get_scripts");
+      const res = await BackendService.getScripts();
       setScripts(res || []);
     } catch (e) { setScripts([]); }
   };
@@ -532,7 +477,7 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
   const handleEditScript = async () => {
     if (scriptModal.selectedScript) {
       try {
-        const content = await invoke<string>('read_script', { name: scriptModal.selectedScript });
+        const content = await BackendService.readScript(scriptModal.selectedScript);
         setScriptModal(prev => ({ ...prev, view: 'edit', editName: prev.selectedScript, editContent: content }));
       } catch (e) { showToast(`读取失败: ${e}`, "error"); }
     } else {
@@ -546,7 +491,7 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
       return;
     }
     try {
-      await invoke('save_script', { name: scriptModal.editName.trim(), content: scriptModal.editContent });
+      await BackendService.saveScript(scriptModal.editName.trim(), scriptModal.editContent);
       await fetchContainers();
       setScriptModal(prev => ({
         ...prev,
@@ -570,11 +515,10 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
 
   const fetchGameResults = async (keywords: string[]): Promise<SearchResult[]> => {
     let allResults: SearchResult[] = [];
-    // TouchGal 直连 API 会被 Cloudflare 拦截，必须走隐藏 WebView 桥接（与「发现」页一致）；
-    // KunGal 搜索接口需要登录态，未登录时返回空
+    // TouchGal 走隐藏 WebView 桥接，VNDB 走官方 Kana API
     const promises = keywords.flatMap(kw => [
-      invoke<SearchResult[]>('touchgal_search', { keyword: kw, page: 1 }).catch(() => []),
-      invoke<SearchResult[]>('search_game', { keyword: kw, source: 'kungal' }).catch(() => [])
+      BackendService.searchGame(kw, 'touchgal').catch(() => []),
+      BackendService.searchGame(kw, 'vndb').catch(() => []),
     ]);
     const resultsArrays = await Promise.all(promises);
     resultsArrays.forEach(arr => allResults.push(...arr));
@@ -588,7 +532,7 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
     if (!searchExecPath) return;
     setIsSearching(true);
     try {
-      const keywords = await invoke<string[]>('get_directory_keywords', { path: searchExecPath });
+      const keywords = await BackendService.getDirectoryKeywords(searchExecPath);
       if (keywords.length === 0) {
         showToast("未提取到有效关键字", "error");
         setIsSearching(false);
@@ -641,7 +585,7 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
     const selected = await open({ directory: true });
     if (selected && typeof selected === 'string') {
       try {
-        const dirs = await invoke<{ dir_name: string, executables: string[] }[]>('scan_game_directories', { path: selected });
+        const dirs = await BackendService.scanGameDirectories(selected);
         if (dirs.length === 0) {
           showToast("未在此目录下找到任何包含可执行文件的游戏", "error");
           return;
@@ -684,7 +628,7 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
 
     for (const item of itemsToMatch) {
       try {
-        const keywords = await invoke<string[]>('get_directory_keywords', { path: item.selectedExec });
+        const keywords = await BackendService.getDirectoryKeywords(item.selectedExec);
         if (keywords.length === 0) {
           updateBatchItem(item.id, { status: 'unmatched', searchResults: [] });
           continue;
@@ -1530,7 +1474,10 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
                     )}>
                       {/* 单选圆形选择框 */}
                       <button
-                        onClick={() => setListSelectedId(inst.id)}
+                        onClick={() => {
+                          setListSelectedId(inst.id);
+                          onActiveInstanceIdChange?.(inst.id);
+                        }}
                         className={clsx(
                           "w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 transition-colors",
                           effectiveListSelection?.id === inst.id ? "border-blue-500" : "border-gray-300 dark:border-gray-600 hover:border-blue-400"
@@ -1540,7 +1487,13 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
                       </button>
 
                       {/* 中间信息 */}
-                      <div className="flex-1 min-w-0">
+                      <div
+                        className="flex-1 min-w-0 cursor-pointer"
+                        onClick={() => {
+                          setListSelectedId(inst.id);
+                          onActiveInstanceIdChange?.(inst.id);
+                        }}
+                      >
                         <div className="flex items-center gap-2">
                           <h3 className="font-semibold text-base text-gray-800 dark:text-gray-200 truncate" title={inst.name}>{inst.name}</h3>
                           {inst.isStarred && <Star size={15} className="text-yellow-400 shrink-0" fill="currentColor" />}
@@ -1581,7 +1534,7 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
                     <div data-instance-id={inst.id} key={inst.id} className="group relative rounded-xl overflow-hidden shadow-sm hover:shadow-xl bg-white dark:bg-[#252525] border border-black/5 dark:border-white/5 transition-all duration-300">
                       <div className="aspect-[3/4] relative bg-black/5 dark:bg-black/50 overflow-hidden rounded-t-xl">
                         {inst.backgroundImage ? (
-                          <img src={inst.backgroundImage} className="w-full h-full object-cover transition-all duration-300 group-hover:blur-sm group-hover:scale-105 group-hover:brightness-50" alt={inst.name} />
+                          <img src={inst.backgroundImage.startsWith('/') ? convertFileSrc(inst.backgroundImage) : inst.backgroundImage} className="w-full h-full object-cover transition-all duration-300 group-hover:blur-sm group-hover:scale-105 group-hover:brightness-50" alt={inst.name} />
                         ) : (
                           <div className="w-full h-full flex items-center justify-center transition-all duration-300 group-hover:blur-sm group-hover:brightness-50"><Box size={48} className="text-gray-400 opacity-30" /></div>
                         )}

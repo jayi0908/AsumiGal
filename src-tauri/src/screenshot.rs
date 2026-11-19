@@ -496,26 +496,49 @@ fn select_target_for_instance(instance: &TrackedInstance) -> Result<WindowInfo, 
     result.map_err(with_permission_hint)
 }
 
-/// 找出窗口宿主进程实际所属的运行中实例
-fn find_instance_for_window(instances: &[TrackedInstance], pid: u32) -> Option<TrackedInstance> {
-    if pid == 0 {
-        return None;
+/// 找出窗口实际所属的运行中实例。
+///
+/// 依次按「真实追踪 pid → 进程树 → 严格窗口匹配」三层判定，**只有在该层能唯一确定归属时才返回**，
+/// 避免多个实例共用同名可执行文件 / 同一 wine 会话时，按「第一个命中」误判到别的实例目录。
+fn find_instance_for_window(instances: &[TrackedInstance], window: &WindowInfo) -> Option<TrackedInstance> {
+    // 第一层：窗口宿主进程正是某实例追踪到的真实游戏进程（最可靠）
+    if window.pid != 0 {
+        let by_real: Vec<&TrackedInstance> = instances
+            .iter()
+            .filter(|i| i.real_pids.contains(&window.pid))
+            .collect();
+        if by_real.len() == 1 {
+            return Some(by_real[0].clone());
+        }
     }
-    instances
-        .iter()
-        .find(|i| instance_matches_window_pid(i, pid))
-        .cloned()
-}
 
-/// 判断某个窗口宿主进程是否属于该实例的游戏（含 Loader 追踪到的真实进程）
-fn instance_matches_window_pid(instance: &TrackedInstance, pid: u32) -> bool {
-    if pid == 0 {
-        return false;
+    // 第二层：窗口宿主进程落在该实例的游戏进程树内（覆盖宿主代为绘窗、Loader 等场景）
+    if window.pid != 0 {
+        let by_tree: Vec<&TrackedInstance> = instances
+            .iter()
+            .filter(|i| {
+                crate::runner::find_game_process_pids(&i.run_mode, &i.game_exe).contains(&window.pid)
+            })
+            .collect();
+        if by_tree.len() == 1 {
+            return Some(by_tree[0].clone());
+        }
     }
-    if instance.real_pids.contains(&pid) {
-        return true;
+
+    // 第三层：以各实例「严格窗口匹配」选出的首选窗口为准，唯一命中该窗口才认领
+    let by_window: Vec<&TrackedInstance> = instances
+        .iter()
+        .filter(|i| {
+            select_window_strict(&i.run_mode, &i.game_exe)
+                .map(|w| w.id == window.id)
+                .unwrap_or(false)
+        })
+        .collect();
+    if by_window.len() == 1 {
+        return Some(by_window[0].clone());
     }
-    crate::runner::find_game_process_pids(&instance.run_mode, &instance.game_exe).contains(&pid)
+
+    None
 }
 
 /// 将一次截屏存到指定实例的截图目录（自定义或默认），返回截屏信息
@@ -603,8 +626,12 @@ pub fn capture_instance_screenshot(
     capture_to_file(&target, &dir)
 }
 
-/// 全局快捷键截屏：根据正在运行的实例自动确定目标窗口与保存位置。
-/// 当前选中实例若配置了「当前焦点应用」，则优先按该配置截屏（不要求游戏正在运行）。
+/// 全局快捷键截屏：捕获当前屏幕焦点窗口，并根据其实际归属确定实例与保存目录。
+///
+/// 关键点：保存目录只取决于「焦点窗口实际属于哪个正在运行的实例」，
+/// 与实例页当前选中（active）实例无关；因此无需为每个实例反复「刷新截图选项」。
+/// 仅当焦点窗口不属于任何运行中实例时，才回退到当前选中实例（且其为「当前焦点应用」模式），
+/// 或回退到唯一的运行中实例。
 #[command]
 pub fn capture_game_screenshot(
     _app: AppHandle,
@@ -615,27 +642,38 @@ pub fn capture_game_screenshot(
     active_screenshot_target: String,
 ) -> Result<GlobalCaptureResult, String> {
     let _ = active_run_mode;
-    if !active_instance_id.trim().is_empty() && active_screenshot_target.trim() == "focused" {
-        let target = select_focused_window().map_err(with_permission_hint)?;
-        // 焦点窗口可能属于另一个正在运行的实例：按进程树归属，存入对应实例的截图目录
-        if let Some(inst) = find_instance_for_window(&get_running_instances(), target.pid) {
+    let running = get_running_instances();
+    let active_focused =
+        !active_instance_id.trim().is_empty() && active_screenshot_target.trim() == "focused";
+
+    let focused = select_focused_window().ok();
+
+    // 1) 焦点窗口归属到某个运行中实例 → 始终存入该实例自己的截图目录
+    if let Some(target) = focused.as_ref() {
+        if let Some(inst) = find_instance_for_window(&running, target) {
             let dir = instance_screenshot_dir(&inst.game_exe, &inst.screenshot_dir)?;
-            let shot = capture_to_file(&target, &dir)?;
+            let shot = capture_to_file(target, &dir)?;
             return Ok(GlobalCaptureResult {
                 instance_id: Some(inst.instance_id),
                 screenshot: shot,
             });
         }
-        // 找不到归属时存入当前选中实例的目录
-        let dir = instance_screenshot_dir(&active_executable_path, &active_screenshot_dir)?;
-        let shot = capture_to_file(&target, &dir)?;
-        return Ok(GlobalCaptureResult {
-            instance_id: Some(active_instance_id),
-            screenshot: shot,
-        });
     }
 
-    let running = get_running_instances();
+    // 2) 焦点窗口不属于任何运行中实例：
+    //    当前选中实例为「当前焦点应用」模式时，存入其目录（用于截取非游戏应用，如浏览器）
+    if active_focused {
+        if let Some(target) = focused {
+            let dir = instance_screenshot_dir(&active_executable_path, &active_screenshot_dir)?;
+            let shot = capture_to_file(&target, &dir)?;
+            return Ok(GlobalCaptureResult {
+                instance_id: Some(active_instance_id),
+                screenshot: shot,
+            });
+        }
+    }
+
+    // 3) 回退：按运行中实例处理
     if running.is_empty() {
         return Err("当前没有正在运行的实例。请先启动游戏，或到实例页选中一个启用「当前屏幕焦点的应用」截图的实例后重试".into());
     }
@@ -649,40 +687,9 @@ pub fn capture_game_screenshot(
         });
     }
 
-    // 多个实例同时运行：优先把「当前焦点窗口」归属到它实际所属的实例，避免误存到某个选中实例目录
-    if let Ok(target) = select_focused_window() {
-        if let Some(inst) = find_instance_for_window(&running, target.pid) {
-            let dir = instance_screenshot_dir(&inst.game_exe, &inst.screenshot_dir)?;
-            let shot = capture_to_file(&target, &dir)?;
-            return Ok(GlobalCaptureResult {
-                instance_id: Some(inst.instance_id),
-                screenshot: shot,
-            });
-        }
-    }
-
-    // 退而求其次：若有且仅有一个实例选择了「当前焦点应用」，用它
-    let focused_running: Vec<&TrackedInstance> = running
-        .iter()
-        .filter(|i| i.screenshot_target.trim() == "focused")
-        .collect();
-    if focused_running.len() == 1 {
-        let instance = focused_running[0];
-        let target = select_focused_window().map_err(with_permission_hint)?;
-        let dir = instance_screenshot_dir(&instance.game_exe, &instance.screenshot_dir)?;
-        let shot = capture_to_file(&target, &dir)?;
-        return Ok(GlobalCaptureResult {
-            instance_id: Some(instance.instance_id.clone()),
-            screenshot: shot,
-        });
-    }
-
-    // 尝试用各自模式严格匹配窗口，恰好只有一个实例匹配成功则用它
+    // 多个实例同时运行且焦点窗口无法归属：严格匹配各自窗口，恰好一个命中才用
     let mut matched: Vec<(TrackedInstance, WindowInfo)> = Vec::new();
     for instance in &running {
-        if instance.screenshot_target.trim() == "focused" {
-            continue;
-        }
         if let Some(window) = select_window_strict(&instance.run_mode, &instance.game_exe) {
             matched.push((instance.clone(), window));
         }

@@ -3,22 +3,14 @@ import { useState, useEffect, useRef } from 'react';
 import { Search, X, Loader2, ExternalLink } from 'lucide-react';
 import { useTheme } from '../contexts/ThemeContext';
 import { motion, AnimatePresence } from 'framer-motion';
-import { invoke } from '@tauri-apps/api/core';
 import { open as openUrl } from "@tauri-apps/plugin-shell";
+import { BackendService } from '../services/backend';
+import { SearchResult } from '../types/instance';
 import clsx from 'clsx';
 
 interface SearchModalProps {
   isOpen: boolean;
   onClose: () => void;
-}
-
-interface SearchResult {
-  id: string;
-  title: string;
-  cover: string;
-  source: string;
-  url: string;
-  date?: string;
 }
 
 export function SearchModal({ isOpen, onClose }: SearchModalProps) {
@@ -27,7 +19,7 @@ export function SearchModal({ isOpen, onClose }: SearchModalProps) {
   
   const [searchQuery, setSearchQuery] = useState('');
   const [results, setResults] = useState<SearchResult[]>([]); // 存储搜索结果
-  const [loadingSource, setLoadingSource] = useState<string | null>(null);
+  const [loadingSource, setLoadingSource] = useState<"touchgal" | "vndb" | null>(null);
   const [hasSearched, setHasSearched] = useState(false); // 是否执行过搜索
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -51,7 +43,7 @@ export function SearchModal({ isOpen, onClose }: SearchModalProps) {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [onClose]);
 
-  const handleSearch = async (source: string) => {
+  const handleSearch = async (source: "touchgal" | "vndb") => {
     if (!searchQuery.trim()) return;
     
     setLoadingSource(source);
@@ -60,15 +52,11 @@ export function SearchModal({ isOpen, onClose }: SearchModalProps) {
     
     try {
       console.log(`[Search] Invoking backend for ${source}...`);
-      const data = await invoke<SearchResult[]>('search_game', { 
-        keyword: searchQuery, 
-        source: source 
-      });
+      const data = await BackendService.searchGame(searchQuery, source);
       console.log("Results:", data);
       setResults(data);
     } catch (error) {
       console.error("Search failed:", error);
-      // 可以显示一个简单的错误提示
     } finally {
       setLoadingSource(null);
     }
@@ -137,11 +125,11 @@ export function SearchModal({ isOpen, onClose }: SearchModalProps) {
                         isDark={isDark} 
                     />
                     <SearchOption 
-                        title="KunGal" 
-                        desc="搜索资源站" 
-                        colorClass="text-blue-500" 
-                        isLoading={loadingSource === 'kungal'}
-                        onClick={() => handleSearch('kungal')} 
+                        title="VNDB" 
+                        desc="视觉小说数据库" 
+                        colorClass="text-indigo-500" 
+                        isLoading={loadingSource === 'vndb'}
+                        onClick={() => handleSearch('vndb')} 
                         isDark={isDark} 
                     />
                 </div>
@@ -192,7 +180,7 @@ export function SearchModal({ isOpen, onClose }: SearchModalProps) {
                                         className="w-full h-full object-cover transition-transform group-hover:scale-105" 
                                     />
                                     {/* 来源角标 */}
-                                    <div className={clsx("absolute bottom-0 right-0 px-1.5 py-0.5 text-[10px] font-bold text-white rounded-tl-md", res.source === 'KunGal' ? "bg-blue-500" : "bg-pink-500")}>
+                                    <div className={clsx("absolute bottom-0 right-0 px-1.5 py-0.5 text-[10px] font-bold text-white rounded-tl-md", res.source === 'VNDB' ? "bg-indigo-500" : "bg-pink-500")}>
                                         {res.source}
                                     </div>
                                 </div>

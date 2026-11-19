@@ -736,12 +736,8 @@ pub async fn launch_game(app: AppHandle, instance_id: String, config: WineConfig
                     let mut miss_count = 0;
                     let exe_name_lower = exe_name.to_lowercase();
                     
-                    // Windows 的 tasklist 命令最多只显示进程名的前 25 个字符，如果太长会被截断
-                    let search_name = if exe_name_lower.len() > 25 {
-                        &exe_name_lower[..25]
-                    } else {
-                        &exe_name_lower
-                    };
+                    // Windows 的 tasklist 命令最多只显示进程名的前 25 个字符，按字符安全截断防止 UTF-8 panic
+                    let search_name: String = exe_name_lower.chars().take(25).collect();
 
                     loop {
                         // 尝试通过 prlctl (Parallels 命令行工具) 直接查看虚拟机内部的进程表
@@ -758,7 +754,7 @@ pub async fn launch_game(app: AppHandle, instance_id: String, config: WineConfig
                         match output {
                             Ok(out) => {
                                 let stdout = String::from_utf8_lossy(&out.stdout).to_lowercase();
-                                if stdout.contains(search_name) {
+                                if stdout.contains(&search_name) {
                                     miss_count = 0; // 找到了游戏进程，重置丢失计数
                                 } else {
                                     miss_count += 1; // 没找到该游戏
@@ -797,26 +793,33 @@ pub async fn launch_game(app: AppHandle, instance_id: String, config: WineConfig
     else if mode == "direct" {
         // 如果 bottle_path 不为空且不是 "Default"，则说明指定了前置执行脚本
         if !config.bottle_path.is_empty() && config.bottle_path != "Default" {
-            let script_dir = app.path().resolve("scripts", tauri::path::BaseDirectory::AppLocalData).unwrap();
-            let script_path = script_dir.join(format!("{}.sh", config.bottle_path));
-            if script_path.exists() {
-                let log_path = "/tmp/asumigal_script.log";
-                let log_file = std::fs::File::create(log_path).unwrap();
-                match Command::new("sh")
-                    .arg(&script_path)
-                    .stdout(log_file.try_clone().unwrap())
-                    .stderr(log_file)
-                    .status()
-                {
-                    Ok(status) => {
-                        if !status.success() {
-                            println!("脚本 {:?} 执行失败，退出码: {:?}", script_path, status.code());
-                        } else {
-                            println!("脚本 {:?} 执行成功", script_path);
+            let script_name = config.bottle_path.trim();
+            if !script_name.contains('/') && !script_name.contains('\\') && !script_name.contains("..") {
+                if let Ok(script_dir) = app.path().resolve("scripts", tauri::path::BaseDirectory::AppLocalData) {
+                    let script_path = script_dir.join(format!("{}.sh", script_name));
+                    if script_path.exists() {
+                        let log_path = "/tmp/asumigal_script.log";
+                        if let Ok(log_file) = std::fs::File::create(log_path) {
+                            if let Ok(stderr_file) = log_file.try_clone() {
+                                match Command::new("sh")
+                                    .arg(&script_path)
+                                    .stdout(log_file)
+                                    .stderr(stderr_file)
+                                    .status()
+                                {
+                                    Ok(status) => {
+                                        if !status.success() {
+                                            println!("脚本 {:?} 执行失败，退出码: {:?}", script_path, status.code());
+                                        } else {
+                                            println!("脚本 {:?} 执行成功", script_path);
+                                        }
+                                    }
+                                    Err(e) => {
+                                        println!("无法执行脚本 {:?}: {}", script_path, e);
+                                    }
+                                }
+                            }
                         }
-                    }
-                    Err(e) => {
-                        println!("无法执行脚本 {:?}: {}", script_path, e);
                     }
                 }
             }

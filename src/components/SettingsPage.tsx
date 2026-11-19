@@ -3,10 +3,11 @@ import { useTheme, ThemeMode } from "../contexts/ThemeContext";
 import { Monitor, Sun, Moon, Type, Image as ImageIcon, FolderOpen, Layout, Cog, Info, Github, Sliders, Search, Camera } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { open as openUrl } from "@tauri-apps/plugin-shell";
-import { invoke, convertFileSrc } from "@tauri-apps/api/core";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { unregisterAll } from "@tauri-apps/plugin-global-shortcut";
 import { SidebarNavItem } from "./SidebarNavItem";
 import { useToast } from "./ToastProvider";
+import { BackendService } from "../services/backend";
 import { clsx } from "clsx";
 
 const DEFAULT_SCREENSHOT_SHORTCUT = "cmd+alt+s";
@@ -99,7 +100,7 @@ export function SettingsPage() {
   useEffect(() => {
     const loadFonts = async () => {
       try {
-        const fonts = await invoke<string[]>("get_system_fonts");
+        const fonts = await BackendService.getSystemFonts();
         setSystemFonts(["system-ui", ...fonts]); // 把默认选项加在最前面
       } catch (e) {
         console.error("字体加载失败", e);
@@ -113,7 +114,7 @@ export function SettingsPage() {
   useEffect(() => {
     const loadContainers = async () => {
       try {
-        const resBottles = await invoke<string[]>("get_crossover_bottles", { path: config.bottlesPath });
+        const resBottles = await BackendService.getCrossoverBottles(config.bottlesPath);
         const validBottles = resBottles.length > 0 ? resBottles : ["Default"];
         setBottles(validBottles);
         if (!validBottles.includes(config.defaultBottle)) {
@@ -122,7 +123,7 @@ export function SettingsPage() {
       } catch (e) { setBottles(["Default"]); }
 
       try {
-        const resVms = await invoke<string[]>("get_pd_vms", { path: config.pdPath });
+        const resVms = await BackendService.getPdVms(config.pdPath);
         setPdVms(resVms.length > 0 ? resVms : [""]);
       } catch (e) { setPdVms([""]); }
     };
@@ -131,7 +132,7 @@ export function SettingsPage() {
 
   const getHomePath = async () => {
     try {
-      return await invoke<string>("get_home_dir");
+      return await BackendService.getHomeDir();
     } catch (e) { return undefined; }
   };
 
@@ -286,7 +287,7 @@ export function SettingsPage() {
                     <button
                       onClick={async () => {
                         try {
-                          await invoke("open_screen_recording_settings");
+                          await BackendService.openScreenRecordingSettings();
                         } catch (e) {
                           showToast(`${e}`, "error");
                         }

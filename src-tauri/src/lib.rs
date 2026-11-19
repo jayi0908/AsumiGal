@@ -5,13 +5,24 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::fs;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 mod cli;
 mod runner;
 mod screenshot;
 mod storage;
+
+static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+
+fn http_client() -> &'static reqwest::Client {
+    HTTP_CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(15))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new())
+    })
+}
 
 /// 冷启动时解析出的、等待前端就绪后执行的外部命令行命令
 struct PendingCli(Mutex<Option<cli::CliCommand>>);
@@ -85,14 +96,7 @@ struct MigrateGameFilesResult {
 }
 
 fn expand_tilde(path_str: &str) -> PathBuf {
-    if path_str.starts_with("~/") {
-        if let Some(home) = dirs::home_dir() {
-            // 去掉前缀 "~/"，把剩下的部分拼接到 home 目录后面
-            return home.join(path_str.trim_start_matches("~/"));
-        }
-    }
-    // 如果没有 ~，或者获取 Home 目录失败，直接返回原路径
-    PathBuf::from(path_str)
+    runner::expand_tilde(path_str)
 }
 
 #[command]
@@ -121,7 +125,7 @@ fn get_system_fonts() -> Vec<String> {
 async fn fetch_ymgal_news(page: u32) -> Result<serde_json::Value, String> {
     println!("Backend fetching Ymgal news page: {}", page); // 后端日志，方便调试
     
-    let client = reqwest::Client::new();
+    let client = http_client();
     let url = format!("https://www.ymgal.games/co/topic/list?type=NEWS&page={}", page);
 
     let res = client.get(&url)
@@ -140,155 +144,61 @@ async fn fetch_ymgal_news(page: u32) -> Result<serde_json::Value, String> {
 }
 
 #[command]
-async fn search_game(keyword: String, source: String) -> Result<Vec<SearchResult>, String> {
-    println!("\n=== 开始搜索 [{}] 关键词: {} ===", source, keyword);
-    let client = reqwest::Client::new();
+async fn search_game(app: tauri::AppHandle, keyword: String, source: String, page: Option<u32>) -> Result<Vec<SearchResult>, String> {
+    let page = page.unwrap_or(1);
+    println!("\n=== 开始搜索 [{}] 关键词: {} (page {}) ===", source, keyword, page);
+    let client = http_client();
     let mut results = Vec::new();
 
     match source.as_str() {
         "touchgal" => {
-            let url = "https://www.touchgal.ink/api/search";
-            // 构造 queryString 内部 JSON
-            let query_string_json = json!([
-                { "type": "keyword", "name": keyword }
-            ]).to_string();
+            // 统一转发给 touchgal_search，通过隐藏 WebView 绕过 Cloudflare
+            return touchgal_search(app, keyword, Some(page)).await;
+        },
+        "vndb" => {
+            let url = "https://api.vndb.org/kana/vn";
+            let body = json!({
+                "filters": ["search", "=", keyword],
+                "fields": "id, title, alttitle, released, rating, votecount, image.url",
+                "results": 12,
+                "page": page
+            });
 
-            let body = TouchGalRequestBody {
-                queryString: query_string_json,
-                limit: 12,
-                searchOption: TouchGalSearchOption {
-                    searchInIntroduction: false,
-                    searchInAlias: true,
-                    searchInTag: false,
-                },
-                page: 1,
-                selectedType: "all".to_string(),
-                selectedLanguage: "all".to_string(),
-                selectedPlatform: "all".to_string(),
-                sortField: "resource_update_time".to_string(),
-                sortOrder: "desc".to_string(),
-                selectedYears: vec!["all".to_string()],
-                selectedMonths: vec!["all".to_string()],
-            };
-
-            // 发送请求
             let res = client.post(url)
-                // 必须完全模拟浏览器的 Headers
-                .header("Host", "www.touchgal.ink")
-                .header("Accept", "*/*")
-                .header("Accept-Language", "zh-CN,zh;q=0.9")
-                .header("Content-Type", "application/json") // 这里还是建议用 application/json
-                .header("Origin", "https://www.touchgal.ink")
-                .header("Referer", "https://www.touchgal.ink/search")
-                .header("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                .header("Content-Type", "application/json")
+                .header("User-Agent", "AsumiGal/0.5.0")
                 .json(&body)
                 .send()
                 .await
-                .map_err(|e| format!("Request Failed: {}", e))?;
+                .map_err(|e| format!("VNDB Request Failed: {}", e))?;
 
-            // 1. 获取原始文本 (关键调试步骤)
-            let raw_text = res.text().await.map_err(|e| format!("Read Text Failed: {}", e))?;
-            println!("[TouchGal] 原始响应: {}", raw_text); // <--- 请在终端查看这行输出
+            let json_val: serde_json::Value = res.json().await
+                .map_err(|e| format!("VNDB Parse Failed: {}", e))?;
 
-            // 2. 解析 JSON
-            let json_val: serde_json::Value = serde_json::from_str(&raw_text)
-                .map_err(|e| format!("JSON Parse Failed: {}", e))?;
-
-            if let Some(games) = json_val["galgames"].as_array() {
-                for g in games {
-                    // 健壮性解析：如果是数字转字符串，如果是字符串直接用，如果是null给默认值
-                    let unique_id = g["unique_id"].as_str().unwrap_or("").to_string();
-                    let name = g["name"].as_str().unwrap_or("未知标题").to_string();
-                    let banner = g["banner"].as_str().unwrap_or("").to_string();
-                    
-                    results.push(SearchResult {
-                        id: unique_id.clone(),
-                        title: name,
-                        cover: banner,
-                        source: "TouchGal".to_string(),
-                        url: format!("https://www.touchgal.ink/{}", unique_id),
-                        date: None,
-                        average_rating: None,
-                        view: None
-                    });
-                }
-            } else {
-                println!("[TouchGal] 警告: 未找到 'galgames' 数组，可能是搜索无结果或结构变更");
-            }
-        },
-        "kungal" => {
-            // KunGal 需要 URL 编码
-            let encoded_keyword = urlencoding::encode(&keyword);
-            let url = format!("https://www.kungal.com/api/search?keywords={}&type=galgame&page=1&limit=12", encoded_keyword);
-            
-            println!("[KunGal] Request URL: {}", url);
-
-            let res = client.get(&url)
-                .header("Host", "www.kungal.com")
-                .header("Referer", "https://www.kungal.com/search")
-                .header("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-                .send()
-                .await
-                .map_err(|e| format!("Request Failed: {}", e))?;
-
-            // 1. 获取原始文本
-            let raw_text = res.text().await.map_err(|e| format!("Read Text Failed: {}", e))?;
-            println!("[KunGal] 原始响应: {}", raw_text); // 调试用输出
-
-            // 2. 解析 JSON（新结构: { "code": 0, "data": { "items": [...] } }，兼容旧顶层数组）
-            let json_val: serde_json::Value = serde_json::from_str(&raw_text)
-                .map_err(|e| format!("JSON Parse Failed: {}", e))?;
-
-            let games = json_val["data"]["items"].as_array()
-                .or_else(|| json_val.as_array());
-            if let Some(games) = games {
-                for g in games {
-                    // id 有时是数字有时是字符串，统一处理
-                    let id = if let Some(n) = g["id"].as_i64() {
-                        n.to_string()
-                    } else {
-                        g["id"].as_str().unwrap_or("").to_string()
-                    };
-
-                    // 名字多语言回退逻辑
-                    let name = if let Some(name_obj) = g["name"].as_object() {
-                        let cn = name_obj.get("zh-cn").and_then(|v| v.as_str()).unwrap_or("");
-                        let tw = name_obj.get("zh-tw").and_then(|v| v.as_str()).unwrap_or("");
-                        let jp = name_obj.get("ja-jp").and_then(|v| v.as_str()).unwrap_or("");
-                        let en = name_obj.get("en-us").and_then(|v| v.as_str()).unwrap_or("");
-                        
-                        if !cn.is_empty() { cn.to_string() }
-                        else if !tw.is_empty() { tw.to_string() }
-                        else if !jp.is_empty() { jp.to_string() }
-                        else { en.to_string() }
-                    } else {
-                        g["name"].as_str().unwrap_or("未知标题").to_string()
-                    };
-
-                    // 封面优先 effective_banner_url，回退 banner
-                    let banner = g["effective_banner_url"].as_str()
+            if let Some(items) = json_val["results"].as_array() {
+                for g in items {
+                    let id = g["id"].as_str().unwrap_or("").to_string();
+                    let title = g["alttitle"].as_str()
                         .filter(|s| !s.is_empty())
-                        .or_else(|| g["banner"].as_str().filter(|s| !s.is_empty()))
-                        .unwrap_or("").to_string();
-                    // 日期兼容新旧字段
-                    let update_time = g["resource_update_time"].as_str()
-                        .or_else(|| g["resourceUpdateTime"].as_str())
-                        .or_else(|| g["release_date"].as_str())
-                        .map(|s| s.split('T').next().unwrap_or("").to_string());
+                        .or_else(|| g["title"].as_str())
+                        .unwrap_or("未知标题")
+                        .to_string();
+                    let cover = g["image"]["url"].as_str().unwrap_or("").to_string();
+                    let date = g["released"].as_str().map(|s| s.to_string());
+                    let rating = g["rating"].as_f64().map(|r| r / 10.0);
+                    let votes = g["votecount"].as_i64();
 
                     results.push(SearchResult {
                         id: id.clone(),
-                        title: name,
-                        cover: banner,
-                        source: "KunGal".to_string(),
-                        url: format!("https://www.kungal.com/galgame/{}", id),
-                        date: update_time,
-                        average_rating: None,
-                        view: None,
+                        title,
+                        cover,
+                        source: "VNDB".to_string(),
+                        url: format!("https://vndb.org/{}", id),
+                        date,
+                        average_rating: rating,
+                        view: votes,
                     });
                 }
-            } else {
-                println!("[KunGal] 警告: 根节点不是数组，可能出错");
             }
         },
         _ => return Err("未知的搜索源".to_string()),
@@ -300,7 +210,10 @@ async fn search_game(keyword: String, source: String) -> Result<Vec<SearchResult
 
 // --- TouchGal 搜索（绕过 Cloudflare：通过隐藏 WebView 同源 fetch） ---
 #[derive(Default)]
-struct TouchGalState(Arc<Mutex<Option<String>>>);
+struct TouchGalState {
+    result: Arc<Mutex<Option<String>>>,
+    query_lock: Arc<tokio::sync::Mutex<()>>,
+}
 
 #[command]
 async fn touchgal_search(app: tauri::AppHandle, keyword: String, page: Option<u32>) -> Result<Vec<SearchResult>, String> {
@@ -310,11 +223,12 @@ async fn touchgal_search(app: tauri::AppHandle, keyword: String, page: Option<u3
     let window_label = "touchgal-bridge";
     let search_url = "https://www.touchgal.ink/search";
 
-    // 获取共享结果 state（用于接收 document.title 变化）
-    let state = {
+    // 获取共享结果 state 与串行化锁（防止多关键字并发覆盖 localStorage 与 document.title）
+    let (state, query_lock) = {
         let s = app.state::<TouchGalState>();
-        s.0.clone()
+        (s.result.clone(), s.query_lock.clone())
     };
+    let _guard = query_lock.lock().await;
 
     // 1. 获取或创建隐藏桥接窗口（必须主线程创建）
     let bridge = match app.get_webview_window(window_label) {

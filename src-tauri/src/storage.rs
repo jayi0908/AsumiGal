@@ -32,7 +32,10 @@ pub fn save_instances(app: AppHandle, data: String) -> Result<(), String> {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
 
-    fs::write(&path, data).map_err(|e| format!("无法写入文件: {}", e))?;
+    // 原子写入：先写入临时文件，再 rename 覆盖，避免中途崩溃或并发写入导致 JSON 损坏
+    let tmp_path = path.with_extension("json.tmp");
+    fs::write(&tmp_path, &data).map_err(|e| format!("无法写入临时文件: {}", e))?;
+    fs::rename(&tmp_path, &path).map_err(|e| format!("无法保存实例文件: {}", e))?;
     println!("数据已保存到: {:?}", path);
     Ok(())
 }
@@ -50,6 +53,19 @@ pub fn load_instances(app: AppHandle) -> Result<String, String> {
     Ok(data)
 }
 
+fn validate_script_name(name: &str) -> Result<String, String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty()
+        || trimmed.contains('/')
+        || trimmed.contains('\\')
+        || trimmed.contains("..")
+        || trimmed == "."
+    {
+        return Err("无效的脚本名称（不能包含路径分隔符或 ..）".into());
+    }
+    Ok(trimmed.to_string())
+}
+
 #[command]
 pub fn get_scripts(app: AppHandle) -> Result<Vec<String>, String> {
     let dir = get_scripts_dir(&app)?;
@@ -57,23 +73,26 @@ pub fn get_scripts(app: AppHandle) -> Result<Vec<String>, String> {
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
             if let Ok(name) = entry.file_name().into_string() {
-                if name.ends_with(".sh") {
-                    scripts.push(name.replace(".sh", ""));
+                if let Some(stem) = name.strip_suffix(".sh") {
+                    scripts.push(stem.to_string());
                 }
             }
         }
     }
+    scripts.sort();
     Ok(scripts)
 }
 
 #[command]
 pub fn read_script(app: AppHandle, name: String) -> Result<String, String> {
-    let path = get_scripts_dir(&app)?.join(format!("{}.sh", name));
+    let valid_name = validate_script_name(&name)?;
+    let path = get_scripts_dir(&app)?.join(format!("{}.sh", valid_name));
     fs::read_to_string(path).map_err(|e| format!("无法读取脚本: {}", e))
 }
 
 #[command]
 pub fn save_script(app: AppHandle, name: String, content: String) -> Result<(), String> {
-    let path = get_scripts_dir(&app)?.join(format!("{}.sh", name));
+    let valid_name = validate_script_name(&name)?;
+    let path = get_scripts_dir(&app)?.join(format!("{}.sh", valid_name));
     fs::write(path, content).map_err(|e| format!("无法保存脚本: {}", e))
 }

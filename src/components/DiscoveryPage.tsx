@@ -1,14 +1,15 @@
 // src/components/DiscoveryPage.tsx
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Loader2, Calendar, User, Eye, AlertCircle, Search, MessagesSquare, Gamepad2, ExternalLink, Star } from 'lucide-react';
-import { invoke } from '@tauri-apps/api/core';    // 改用 invoke
+import { Loader2, Calendar, User, Eye, AlertCircle, Search, MessagesSquare, Gamepad2, ExternalLink, Star, BookOpen } from 'lucide-react';
 import { useTheme } from '../contexts/ThemeContext';
 import { SidebarNavItem } from './SidebarNavItem';
 import { SearchModal } from './SearchModal';
+import { BackendService } from '../services/backend';
+import { SearchResult } from '../types/instance';
 import clsx from 'clsx';
 import { open as openUrl } from "@tauri-apps/plugin-shell";
 
-// --- 类型定义 (保持不变) ---
+// --- 类型定义 ---
 interface Topic {
   topicId: string;
   author: number;
@@ -31,22 +32,11 @@ interface YmgalResponse {
   data: Topic[];
 }
 
-interface TouchGalResult {
-  id: string;
-  title: string;
-  cover: string;
-  source: string;
-  url: string;
-  date?: string | null;
-  averageRating?: number | null;
-  view?: number | null;
-}
-
 export function DiscoveryPage() {
   const { currentTheme } = useTheme();
   const isDark = currentTheme === 'dark';
 
-  const [activeItem, setActiveItem] = useState<'news' | 'touchgal'>('news');
+  const [activeItem, setActiveItem] = useState<'news' | 'touchgal' | 'vndb'>('news');
   const [articles, setArticles] = useState<Topic[]>([]);
   const [hasMore, setHasMore] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -54,7 +44,7 @@ export function DiscoveryPage() {
 
   // TouchGal 搜索状态
   const [tgKeyword, setTgKeyword] = useState('');
-  const [tgResults, setTgResults] = useState<TouchGalResult[]>([]);
+  const [tgResults, setTgResults] = useState<SearchResult[]>([]);
   const [tgLoading, setTgLoading] = useState(false);
   const [tgLoadingMore, setTgLoadingMore] = useState(false);
   const [tgHasMore, setTgHasMore] = useState(false);
@@ -63,6 +53,18 @@ export function DiscoveryPage() {
   const tgInputRef = useRef<HTMLInputElement>(null);
   const tgPageRef = useRef(1);
   const tgObserverTarget = useRef<HTMLDivElement>(null);
+
+  // VNDB 搜索状态
+  const [vndbKeyword, setVndbKeyword] = useState('');
+  const [vndbResults, setVndbResults] = useState<SearchResult[]>([]);
+  const [vndbLoading, setVndbLoading] = useState(false);
+  const [vndbLoadingMore, setVndbLoadingMore] = useState(false);
+  const [vndbHasMore, setVndbHasMore] = useState(false);
+  const [vndbError, setVndbError] = useState<string | null>(null);
+  const [vndbSearched, setVndbSearched] = useState(false);
+  const vndbInputRef = useRef<HTMLInputElement>(null);
+  const vndbPageRef = useRef(1);
+  const vndbObserverTarget = useRef<HTMLDivElement>(null);
 
   const pageRef = useRef(1);
   const loadingRef = useRef(false);
@@ -80,9 +82,7 @@ export function DiscoveryPage() {
 
     try {
       console.log(`[Discovery] Calling Rust backend for page ${pageNum}...`);
-      
-      // 使用 invoke 调用 Rust 函数 'fetch_ymgal_news'
-      const data = await invoke<YmgalResponse>('fetch_ymgal_news', { page: pageNum });
+      const data = await BackendService.fetchYmgalNews<YmgalResponse>(pageNum);
       
       console.log("[Discovery] Rust response:", data);
 
@@ -104,7 +104,6 @@ export function DiscoveryPage() {
       }
     } catch (err) {
       console.error("[Discovery] Rust Error:", err);
-      // invoke 返回的错误通常是字符串
       setError(String(err));
     } finally {
       loadingRef.current = false;
@@ -160,7 +159,7 @@ export function DiscoveryPage() {
     tgPageRef.current = 1;
     setTgHasMore(false);
     try {
-      const results = await invoke<TouchGalResult[]>('touchgal_search', { keyword: kw, page: 1 });
+      const results = await BackendService.touchgalSearch(kw, 1);
       const list = results || [];
       setTgResults(list);
       setTgHasMore(list.length >= 12);
@@ -178,7 +177,7 @@ export function DiscoveryPage() {
     const nextPage = tgPageRef.current + 1;
     setTgLoadingMore(true);
     try {
-      const results = await invoke<TouchGalResult[]>('touchgal_search', { keyword: kw, page: nextPage });
+      const results = await BackendService.touchgalSearch(kw, nextPage);
       const list = results || [];
       setTgResults(prev => {
         const seen = new Set(prev.map(r => r.id));
@@ -212,10 +211,76 @@ export function DiscoveryPage() {
     return () => observer.disconnect();
   }, [activeItem, tgHasMore, tgLoading, tgLoadingMore, tgKeyword]);
 
-  // 切换到 touchgal 搜索时聚焦输入框
+  // --- VNDB 搜索 ---
+  const handleVndbSearch = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    const kw = vndbKeyword.trim();
+    if (!kw) return;
+    setVndbLoading(true);
+    setVndbError(null);
+    setVndbSearched(true);
+    setVndbResults([]);
+    vndbPageRef.current = 1;
+    setVndbHasMore(false);
+    try {
+      const results = await BackendService.vndbSearch(kw, 1);
+      const list = results || [];
+      setVndbResults(list);
+      setVndbHasMore(list.length >= 12);
+    } catch (err) {
+      console.error("[VNDB] Error:", err);
+      setVndbError(String(err));
+    } finally {
+      setVndbLoading(false);
+    }
+  };
+
+  const loadMoreVndb = async () => {
+    const kw = vndbKeyword.trim();
+    if (!kw || vndbLoading || vndbLoadingMore || !vndbHasMore) return;
+    const nextPage = vndbPageRef.current + 1;
+    setVndbLoadingMore(true);
+    try {
+      const results = await BackendService.vndbSearch(kw, nextPage);
+      const list = results || [];
+      setVndbResults(prev => {
+        const seen = new Set(prev.map(r => r.id));
+        return [...prev, ...list.filter(r => !seen.has(r.id))];
+      });
+      vndbPageRef.current = nextPage;
+      setVndbHasMore(list.length >= 12);
+    } catch (err) {
+      console.error("[VNDB] load more error:", err);
+      setVndbError(String(err));
+    } finally {
+      setVndbLoadingMore(false);
+    }
+  };
+
+  // VNDB 搜索无限滚动
+  useEffect(() => {
+    if (activeItem !== 'vndb') return;
+    const observer = new IntersectionObserver(
+      entries => {
+        const target = entries[0];
+        if (target.isIntersecting && vndbHasMore && !vndbLoading && !vndbLoadingMore) {
+          loadMoreVndb();
+        }
+      },
+      { threshold: 0.1, rootMargin: '100px' }
+    );
+    if (vndbObserverTarget.current) {
+      observer.observe(vndbObserverTarget.current);
+    }
+    return () => observer.disconnect();
+  }, [activeItem, vndbHasMore, vndbLoading, vndbLoadingMore, vndbKeyword]);
+
+  // 切换到搜索页时聚焦输入框
   useEffect(() => {
     if (activeItem === 'touchgal') {
       setTimeout(() => tgInputRef.current?.focus(), 100);
+    } else if (activeItem === 'vndb') {
+      setTimeout(() => vndbInputRef.current?.focus(), 100);
     }
   }, [activeItem]);
 
@@ -242,25 +307,47 @@ export function DiscoveryPage() {
             label="TouchGal 搜索"
             onClick={() => setActiveItem('touchgal')}
           />
+          <SidebarNavItem
+            active={activeItem === 'vndb'}
+            icon={<BookOpen size={18} className="text-indigo-500 shrink-0" />}
+            label="VNDB 搜索"
+            onClick={() => setActiveItem('vndb')}
+          />
         </div>
       </aside>
 
       {/* ===== 右侧主内容区域 ===== */}
       <main className="flex-1 h-full min-w-0 relative flex flex-col">
-        {activeItem === 'touchgal' ? (
-          /* ---------- TouchGal 搜索 ---------- */
+        {activeItem === 'touchgal' || activeItem === 'vndb' ? (() => {
+          const isVndb = activeItem === 'vndb';
+          const curKeyword = isVndb ? vndbKeyword : tgKeyword;
+          const setCurKeyword = isVndb ? setVndbKeyword : setTgKeyword;
+          const curResults = isVndb ? vndbResults : tgResults;
+          const curLoading = isVndb ? vndbLoading : tgLoading;
+          const curLoadingMore = isVndb ? vndbLoadingMore : tgLoadingMore;
+          const curHasMore = isVndb ? vndbHasMore : tgHasMore;
+          const curError = isVndb ? vndbError : tgError;
+          const setCurError = isVndb ? setVndbError : setTgError;
+          const curSearched = isVndb ? vndbSearched : tgSearched;
+          const curInputRef = isVndb ? vndbInputRef : tgInputRef;
+          const curObserverRef = isVndb ? vndbObserverTarget : tgObserverTarget;
+          const handleSubmit = isVndb ? handleVndbSearch : handleTouchGalSearch;
+          const placeholder = isVndb ? "搜索 VNDB 上的视觉小说 (支持日文/英文/罗马音/中文)..." : "搜索 TouchGal 上的 Galgame...";
+
+          return (
+          /* ---------- TouchGal / VNDB 搜索 ---------- */
           <div className="flex-1 overflow-y-auto custom-scrollbar px-8 py-8">
             <div className="max-w-5xl mx-auto space-y-6">
               {/* 搜索框 */}
-              <form onSubmit={handleTouchGalSearch} className="flex items-center gap-2">
+              <form onSubmit={handleSubmit} className="flex items-center gap-2">
                 <div className="relative flex-1">
                   <Search size={18} className={clsx("absolute left-4 top-1/2 -translate-y-1/2", isDark ? "text-white/30" : "text-gray-400")} />
                   <input
-                    ref={tgInputRef}
+                    ref={curInputRef}
                     type="text"
-                    value={tgKeyword}
-                    onChange={(e) => setTgKeyword(e.target.value)}
-                    placeholder="搜索 TouchGal 上的 Galgame..."
+                    value={curKeyword}
+                    onChange={(e) => setCurKeyword(e.target.value)}
+                    placeholder={placeholder}
                     className={clsx(
                       "w-full pl-12 pr-4 py-3 rounded-xl outline-none transition-colors border text-base",
                       isDark
@@ -271,31 +358,31 @@ export function DiscoveryPage() {
                 </div>
                 <button
                   type="submit"
-                  disabled={tgLoading || !tgKeyword.trim()}
+                  disabled={curLoading || !curKeyword.trim()}
                   className={clsx(
                     "flex items-center gap-2 px-5 py-3 rounded-xl font-medium transition-all shadow-md",
-                    tgLoading || !tgKeyword.trim()
+                    curLoading || !curKeyword.trim()
                       ? "opacity-50 cursor-not-allowed bg-gray-500 text-white"
                       : "bg-blue-500 text-white hover:bg-blue-600 hover:shadow-blue-500/30 active:scale-95"
                   )}
                 >
-                  {tgLoading ? <Loader2 size={18} className="animate-spin" /> : <Search size={18} />}
+                  {curLoading ? <Loader2 size={18} className="animate-spin" /> : <Search size={18} />}
                   搜索
                 </button>
               </form>
 
               {/* 错误提示 */}
-              {tgError && (
+              {curError && (
                 <div className="p-4 rounded-lg bg-red-500/10 text-red-500 flex items-center gap-2">
                   <AlertCircle size={20} />
-                  <span className="flex-1">{tgError}</span>
-                  <button onClick={() => setTgError(null)} className="underline hover:text-red-600 font-medium">关闭</button>
+                  <span className="flex-1">{curError}</span>
+                  <button onClick={() => setCurError(null)} className="underline hover:text-red-600 font-medium">关闭</button>
                 </div>
               )}
 
               {/* 结果卡片 */}
-              {tgSearched && !tgLoading && tgError === null && (
-                tgResults.length === 0 ? (
+              {curSearched && !curLoading && curError === null && (
+                curResults.length === 0 ? (
                   <div className="h-40 flex flex-col items-center justify-center text-gray-500">
                     <Gamepad2 size={48} className="mb-3 opacity-20" />
                     <p>未找到相关游戏</p>
@@ -303,7 +390,7 @@ export function DiscoveryPage() {
                 ) : (
                   <>
                     <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-4">
-                    {tgResults.map((res) => (
+                    {curResults.map((res) => (
                       <div
                         key={res.id}
                         onClick={() => openUrl(res.url)}
@@ -341,7 +428,7 @@ export function DiscoveryPage() {
                                 </span>
                               )}
                               {res.view != null && (
-                                <span className="flex items-center gap-1">
+                                <span className="flex items-center gap-1" title={isVndb ? "评分人数" : "浏览量"}>
                                   <Eye size={12} className="text-gray-400" />
                                   <span>{res.view.toLocaleString()}</span>
                                 </span>
@@ -360,14 +447,14 @@ export function DiscoveryPage() {
                     ))}
                   </div>
                   {/* 底部加载更多 */}
-                  <div ref={tgObserverTarget} className="py-6 flex justify-center items-center w-full min-h-[50px]">
-                    {tgLoadingMore && (
+                  <div ref={curObserverRef} className="py-6 flex justify-center items-center w-full min-h-[50px]">
+                    {curLoadingMore && (
                       <div className={clsx("flex items-center gap-2 animate-pulse", isDark ? "text-white/50" : "text-gray-500")}>
                         <Loader2 className="animate-spin" size={18} />
                         <span>正在加载更多...</span>
                       </div>
                     )}
-                    {!tgHasMore && tgResults.length > 0 && (
+                    {!curHasMore && curResults.length > 0 && (
                       <div className={clsx("text-sm", isDark ? "text-white/20" : "text-gray-300")}>
                         - 已经到底啦 -
                       </div>
@@ -378,7 +465,8 @@ export function DiscoveryPage() {
               )}
             </div>
           </div>
-        ) : (
+          );
+        })() : (
           /* ---------- 月幕新闻 ---------- */
           <div className="flex-1 overflow-y-auto custom-scrollbar px-8 py-8">
             <div className="max-w-7xl mx-auto space-y-8">
