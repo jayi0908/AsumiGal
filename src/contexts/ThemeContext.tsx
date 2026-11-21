@@ -1,6 +1,9 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from "react";
 
 export type ThemeMode = "light" | "dark" | "system";
+export type LauncherActionOnLaunch = "keep" | "minimize" | "hide";
+export type DefaultSortMode = "recent" | "name";
+export type DefaultViewMode = "list" | "grid";
 
 export interface AppConfig {
   // --- 外观 ---
@@ -9,6 +12,11 @@ export interface AppConfig {
   fontSize: number;
   customBgImage: string;
   useInstanceBg: boolean;
+  bgBlur: number;          // 背景模糊半径 (px, 0 ~ 16)
+  bgOverlayOpacity: number; // 背景遮罩浓度 (0.15 ~ 0.85)
+  showHomeGreeting: boolean; // 首页是否展示问候与实例摘要
+  greetingTitle: string;    // 自定义首页主标语
+  greetingSubtitle: string; // 自定义首页副标语
   
   // --- 全局游戏设置 ---
   crossoverPath: string; // CrossOver.app 路径
@@ -17,17 +25,28 @@ export interface AppConfig {
   defaultBottle: string;
   pdPath: string; // PD 虚拟机本地路径
   defaultPdVm: string;  // 默认虚拟机 Applications 目录名称
-   defaultDiskGameRoot: string; // 默认硬盘游戏根目录
-   defaultLocalGameRoot: string; // 默认本机游戏根目录
-   screenshotShortcut: string; // 全局截屏快捷键（Tauri 加速器格式，如 cmd+alt+s）
+  defaultDiskGameRoot: string; // 默认硬盘游戏根目录
+  defaultLocalGameRoot: string; // 默认本机游戏根目录
+  screenshotShortcut: string; // 全局截屏快捷键（Tauri 加速器格式，如 cmd+alt+s）
+  defaultLocale: string; // 全局默认区域语言 (zh_CN.UTF-8 / ja_JP.UTF-8)
+  enableWineDebugLog: boolean; // 全局开启 Wine 诊断日志 (+err,+warn)
+  autoPopupCrashLog: boolean; // 启动后 6 秒内异常退出自动弹出日志诊断窗口
+  onGameLaunchAction: LauncherActionOnLaunch; // 启动游戏后启动器窗口行为
+  defaultViewMode: DefaultViewMode; // 实例页默认视图
+  defaultSortMode: DefaultSortMode; // 实例页默认排序
 }
 
 const DEFAULT_CONFIG: AppConfig = {
   theme: "dark",
-  fontFamily: "system-ui", // 默认系统字体
+  fontFamily: "system-ui",
   fontSize: 1.0,
   customBgImage: "",
   useInstanceBg: true,
+  bgBlur: 4,
+  bgOverlayOpacity: 0.45,
+  showHomeGreeting: true,
+  greetingTitle: "Ciallo~ (∠・ω< )⌒★",
+  greetingSubtitle: "欢迎回来，先輩",
   crossoverPath: "/Applications/CrossOver.app",
   bottlesPath: "~/Library/Application Support/CrossOver/Bottles",
   enableDiscovery: true,
@@ -37,11 +56,18 @@ const DEFAULT_CONFIG: AppConfig = {
   defaultDiskGameRoot: "",
   defaultLocalGameRoot: "",
   screenshotShortcut: "cmd+alt+s",
+  defaultLocale: "zh_CN.UTF-8",
+  enableWineDebugLog: false,
+  autoPopupCrashLog: true,
+  onGameLaunchAction: "keep",
+  defaultViewMode: "list",
+  defaultSortMode: "recent",
 };
 
 interface ThemeContextType {
   config: AppConfig;
   updateConfig: (newConfig: Partial<AppConfig>) => void;
+  resetConfig: () => void;
   currentTheme: "light" | "dark";
 }
 
@@ -91,7 +117,6 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       ? '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif'
       : `"${config.fontFamily}", sans-serif`;
     
-    // 设置 CSS 变量，配合 index.css 里的 * { ... } 即可全局生效
     document.documentElement.style.setProperty('--app-font-family', fontVal);
 
     // 3. 应用 Tailwind Dark Mode 类
@@ -105,8 +130,12 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     setConfig(prev => ({ ...prev, ...newConfig }));
   };
 
+  const resetConfig = () => {
+    setConfig(DEFAULT_CONFIG);
+  };
+
   return (
-    <ThemeContext.Provider value={{ config, updateConfig, currentTheme }}>
+    <ThemeContext.Provider value={{ config, updateConfig, resetConfig, currentTheme }}>
       {children}
     </ThemeContext.Provider>
   );

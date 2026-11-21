@@ -1,12 +1,13 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { Layout } from "./components/Layout";
 import { LaunchControl } from "./components/LaunchControl";
-import { InstancesPage, GameInstance } from "./components/InstancesPage";
+import { InstancesPage, GameInstance, DetailTab } from "./components/InstancesPage";
 import { DiscoveryPage } from "./components/DiscoveryPage";
 import { SettingsPage } from "./components/SettingsPage";
 import { ToastProvider, useToast } from "./components/ToastProvider";
 import { useTheme, ThemeProvider } from "./contexts/ThemeContext";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { register, unregisterAll } from "@tauri-apps/plugin-global-shortcut";
 import { BackendService } from "./services/backend";
 
@@ -16,13 +17,17 @@ function AppContent() {
   const [activeTab, setActiveTab] = useState<"home" | "instances" | "discovery" | "settings">("home");
   const [instances, setInstances] = useState<GameInstance[]>([]);
   const [instanceSettingsTargetId, setInstanceSettingsTargetId] = useState<string | null>(null);
+  const [instanceSettingsTargetTab, setInstanceSettingsTargetTab] = useState<DetailTab | null>(null);
   const [focusInstanceId, setFocusInstanceId] = useState<string | null>(null);
-  const { config } = useTheme();
+  const { config, currentTheme } = useTheme();
+  const isDark = currentTheme === "dark";
   const { showToast } = useToast();
   const isLoaded = useRef(false);
   const [dryRunActive, setDryRunActive] = useState(false);
   const [dryRunInstanceId, setDryRunInstanceId] = useState<string | null>(null);
   const dryRunIntervalRef = useRef<number | null>(null);
+  const autoPopupCrashRef = useRef(config.autoPopupCrashLog);
+  autoPopupCrashRef.current = config.autoPopupCrashLog;
 
   // 辅助函数：对实例列表进行排序（最近启动的在最前，然后是新建的）
   const sortInstances = (list: GameInstance[]) => {
@@ -146,6 +151,18 @@ function AppContent() {
       const { instance_id, duration_sec } = event.payload;
       console.log(`收到游戏结束事件: ID=${instance_id}, 时长=${duration_sec}s`);
 
+      // 如果启动器被自动最小化或隐藏，在游戏退出后恢复显示
+      getCurrentWindow().unminimize().catch(() => {});
+      getCurrentWindow().show().catch(() => {});
+
+      // 若游戏启动后 6 秒内意外退出且开启了闪退诊断自动跳转，打开该实例的日志与诊断页
+      if (duration_sec > 0 && duration_sec <= 6 && (autoPopupCrashRef.current ?? true)) {
+        showToast("检测到游戏在启动后快速退出，已打开运行日志与排错诊断", "info");
+        setInstanceSettingsTargetId(instance_id);
+        setInstanceSettingsTargetTab("logs");
+        setActiveTab("instances");
+      }
+
       setInstances((prevInstances) => {
         const todayKey = new Date().toLocaleDateString("en-CA");
         
@@ -191,9 +208,17 @@ function AppContent() {
         env_vars: instance.envVars || '',
         work_dir: instance.workDir || '',
         screenshot_dir: instance.screenshotCustomDir ? (instance.screenshotRootDir || '').trim() : '',
-        screenshot_target: instance.screenshotTarget === 'focused' ? 'focused' : 'game'
+        screenshot_target: instance.screenshotTarget === 'focused' ? 'focused' : 'game',
+        locale: instance.locale || config.defaultLocale || 'zh_CN.UTF-8',
+        wine_debug: (instance.wineDebug || config.enableWineDebugLog) ? '+err,+warn' : '-all',
       });
       showToast(`${instance.name} 启动成功 (PID: ${response})`, "success");
+
+      if (config.onGameLaunchAction === "minimize") {
+        getCurrentWindow().minimize().catch(() => {});
+      } else if (config.onGameLaunchAction === "hide") {
+        getCurrentWindow().hide().catch(() => {});
+      }
 
       // 启动后将该实例设为「当前实例」，使全局截图在无法从焦点窗口归属时也能落到刚启动的实例目录
       setActiveInstanceId(instance.id);
@@ -358,6 +383,7 @@ function AppContent() {
           onLaunch={handleLaunch} 
           onGoToSettings={(instance) => {
             setInstanceSettingsTargetId(instance.id);
+            setInstanceSettingsTargetTab("overview");
             setFocusInstanceId(instance.id);
             setActiveTab("instances");
           }}
@@ -369,13 +395,13 @@ function AppContent() {
       }
     >
       {/* Home 页内容 */}
-      {activeTab === "home" && (
-        <div className="max-w-2xl mt-24 px-10 animate-in slide-in-from-left-10 fade-in duration-500">
-          <h3 className="text-3xl font-bold text-white mb-4 drop-shadow-lg">
-            {/* {currentDisplayInstance?.name || */"Ciallo~ (∠・ω< )⌒★"}
+      {activeTab === "home" && (config.showHomeGreeting ?? true) && (
+        <div className="max-w-xl mt-20 px-10 animate-in slide-in-from-left-8 fade-in duration-500">
+          <h3 className={`text-3xl font-bold mb-2.5 tracking-tight ${isDark ? "text-white drop-shadow-md" : "text-slate-900 drop-shadow-[0_1px_8px_rgba(255,255,255,0.85)]"}`}>
+            {config.greetingTitle ?? "Ciallo~ (∠・ω< )⌒★"}
           </h3>
-          <p className="text-xl text-white/80 leading-relaxed max-w-lg drop-shadow-md">
-            {/* currentDisplayInstance?.info || */"欢迎回来，先輩"}
+          <p className={`text-base leading-relaxed max-w-md ${isDark ? "text-white/80 drop-shadow" : "text-slate-800 font-medium drop-shadow-[0_1px_6px_rgba(255,255,255,0.8)]"}`}>
+            {config.greetingSubtitle ?? "欢迎回来，先輩"}
           </p>
         </div>
       )}
@@ -387,7 +413,11 @@ function AppContent() {
           setInstances={handleUpdateInstances} 
           onLaunch={handleLaunch} 
           settingsTargetId={instanceSettingsTargetId}
-          onConsumeSettingsTarget={() => setInstanceSettingsTargetId(null)}
+          settingsTargetTab={instanceSettingsTargetTab}
+          onConsumeSettingsTarget={() => {
+            setInstanceSettingsTargetId(null);
+            setInstanceSettingsTargetTab(null);
+          }}
           focusInstanceId={focusInstanceId}
           onConsumeFocusInstance={() => setFocusInstanceId(null)}
           onActiveInstanceIdChange={setActiveInstanceId}

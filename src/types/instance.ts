@@ -26,6 +26,15 @@ export interface GameInstance {
   screenshotCustomDir?: boolean;
   screenshotRootDir?: string;
   screenshotTarget?: ScreenshotTarget;
+  locale?: string;
+  wineDebug?: boolean;
+}
+
+export interface GameLogLine {
+  instanceId: string;
+  timestamp: string;
+  level: 'info' | 'warn' | 'error' | 'system';
+  line: string;
 }
 
 export interface SearchResult {

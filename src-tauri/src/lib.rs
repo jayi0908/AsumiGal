@@ -693,6 +693,8 @@ pub fn run() {
             runner::launch_game,
             runner::stop_game,
             runner::get_crossover_bottles,
+            runner::get_instance_logs,
+            runner::clear_instance_logs,
             storage::save_instances,
             storage::load_instances,
             storage::get_scripts,

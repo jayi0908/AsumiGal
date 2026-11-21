@@ -1,4 +1,4 @@
-import { GameInstance, SearchResult, ScreenshotItem } from "../types/instance";
+import { GameInstance, SearchResult, ScreenshotItem, GameLogLine } from "../types/instance";
 import { invoke } from "@tauri-apps/api/core";
 
 export interface WineLaunchConfig {
@@ -12,6 +12,8 @@ export interface WineLaunchConfig {
   work_dir?: string;
   screenshot_dir?: string;
   screenshot_target?: string;
+  locale?: string;
+  wine_debug?: string;
 }
 
 export interface MigrateGameFilesPayload {
@@ -47,6 +49,14 @@ export const BackendService = {
 
   async stopGame(instanceId: string, config: WineLaunchConfig): Promise<number[]> {
     return await invoke<number[]>("stop_game", { instanceId, config });
+  },
+
+  async getInstanceLogs(instanceId: string): Promise<GameLogLine[]> {
+    return await invoke<GameLogLine[]>("get_instance_logs", { instanceId });
+  },
+
+  async clearInstanceLogs(instanceId: string): Promise<void> {
+    await invoke("clear_instance_logs", { instanceId });
   },
 
   // --- 容器与脚本 ---

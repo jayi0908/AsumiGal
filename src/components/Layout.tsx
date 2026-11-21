@@ -51,6 +51,8 @@ export function Layout({
     };
 
     const isDark = currentTheme === 'dark';
+    const blurPx = config.bgBlur ?? 4;
+    const overlayOpacity = config.bgOverlayOpacity ?? 0.45;
 
     // 快捷键监听
     useEffect(() => {
@@ -67,7 +69,7 @@ export function Layout({
   return (
     <div className={clsx(
              "relative h-screen w-screen overflow-hidden font-sans transition-colors duration-300",
-             isDark ? "text-white" : "text-gray-900"
+             isDark ? "text-slate-100 bg-[#0d0f14]" : "text-slate-800 bg-[#eef2f6]"
         )}>
       {/* 液态玻璃 SVG 滤镜 */}
       <LiquidGlassDistortionFilter />
@@ -76,17 +78,21 @@ export function Layout({
       <div className="absolute inset-0 z-0">
         <img 
           src={getBgImage()} 
-          className={`w-full h-full object-cover transition-all duration-500 ${activeTab !== 'home' ? 'opacity-30 blur-sm' : 'opacity-60'}`} 
+          className="w-full h-full object-cover transition-all duration-500 scale-[1.01]"
+          style={{
+            filter: activeTab !== 'home' ? `blur(${Math.max(blurPx, 8)}px)` : (blurPx > 0 ? `blur(${Math.round(blurPx * 0.4)}px)` : 'none'),
+            opacity: activeTab !== 'home' ? 0.35 : 0.72,
+          }}
           alt="bg" 
         />
-        <div className={clsx(
-            "absolute inset-0 bg-gradient-to-t",
-            isDark ? "from-black/90 via-black/40 to-black/20" : "" 
-        )} />
-        <div className={clsx(
-            "absolute inset-0 backdrop-blur-[2px]",
-            isDark ? "bg-black/30" : "bg-white/20"
-        )} />
+        <div
+          className="absolute inset-0 transition-colors duration-300"
+          style={{
+            background: isDark
+              ? `linear-gradient(to top, rgba(13, 15, 20, ${Math.min(0.95, overlayOpacity + 0.35)}), rgba(13, 15, 20, ${overlayOpacity}))`
+              : `linear-gradient(to top, rgba(241, 245, 249, ${Math.min(0.88, overlayOpacity + 0.25)}), rgba(248, 250, 252, ${Math.max(0.15, overlayOpacity * 0.6)}))`,
+          }}
+        />
       </div>
 
       {/* 搜索模态框 */}
@@ -95,7 +101,7 @@ export function Layout({
       {/* 内容主体（导航栏 + 液态玻璃内容卡片） */}
       <div className="relative z-10 flex flex-col w-full h-full">
         {/* 顶部导航 */}
-        <div className="flex justify-center pt-4 pb-2 shrink-0">
+        <div className="flex justify-center pt-3.5 pb-2 shrink-0">
           <HeadNavBar
             activeTab={activeTab}
             setActiveTab={setActiveTab}

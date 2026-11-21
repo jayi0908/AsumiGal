@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, type ReactNode } from "react";
-import { Plus, Box, Boxes, Save, Trash2, FolderOpen, Play, Settings, Search, X, Loader2, ArrowLeft, ArrowLeftRight, Image as ImageIcon, ChevronDown, CheckCircle, AlertCircle, FileCode2, HardDrive, Laptop, Star, Gamepad2, Flag, ArrowDownWideNarrow, SlidersHorizontal, List, LayoutGrid, Ellipsis, Pencil, Camera, Info, Monitor } from "lucide-react";
+import { Plus, Box, Boxes, Save, Trash2, FolderOpen, Play, Settings, Search, X, Loader2, ArrowLeft, ArrowLeftRight, Image as ImageIcon, ChevronDown, CheckCircle, AlertCircle, FileCode2, HardDrive, Laptop, Star, Gamepad2, Flag, ArrowDownWideNarrow, SlidersHorizontal, List, LayoutGrid, Ellipsis, Pencil, Camera, Info, Monitor, LayoutDashboard, Terminal } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
@@ -9,6 +9,8 @@ import { DeleteModal } from "./DeleteModal";
 import { useTheme } from "../contexts/ThemeContext";
 import { Tooltip } from "./Tooltip";
 import { SidebarNavItem } from "./SidebarNavItem";
+import { InstanceOverview } from "./InstanceOverview";
+import { GameLogPanel } from "./GameLogPanel";
 import { BackendService } from "../services/backend";
 import { GameInstance, SearchResult, ScreenshotItem, BatchItem, GameFileStatus } from "../types/instance";
 import clsx from "clsx";
@@ -20,6 +22,7 @@ interface InstancesPageProps {
   setInstances: (instances: GameInstance[]) => void;
   onLaunch: (instance: GameInstance) => void;
   settingsTargetId?: string | null;
+  settingsTargetTab?: DetailTab | null;
   onConsumeSettingsTarget?: () => void;
   focusInstanceId?: string | null;
   onConsumeFocusInstance?: () => void;
@@ -29,7 +32,7 @@ interface InstancesPageProps {
 type ImportState = 'none' | 'choice' | 'search_params' | 'search_results' | 'manual_form';
 type ViewMode = 'list' | 'grid';
 type SortMode = 'recent' | 'name';
-type DetailTab = 'basic' | 'launch' | 'screenshots';
+export type DetailTab = 'overview' | 'basic' | 'launch' | 'screenshots' | 'logs';
 
 interface FilterState {
   crossover: boolean;
@@ -49,7 +52,7 @@ const EMPTY_FILTERS: FilterState = {
   finished: false,
 };
 
-export function InstancesPage({ instances, setInstances, onLaunch, settingsTargetId, onConsumeSettingsTarget, focusInstanceId, onConsumeFocusInstance, onActiveInstanceIdChange }: InstancesPageProps) {
+export function InstancesPage({ instances, setInstances, onLaunch, settingsTargetId, settingsTargetTab, onConsumeSettingsTarget, focusInstanceId, onConsumeFocusInstance, onActiveInstanceIdChange }: InstancesPageProps) {
   const { config, updateConfig } = useTheme();
   const { showToast } = useToast();
   
@@ -57,7 +60,7 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
   const [pdVms, setPdVms] = useState<string[]>([]);
   const [scripts, setScripts] = useState<string[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [detailTab, setDetailTab] = useState<DetailTab>('basic');
+  const [detailTab, setDetailTab] = useState<DetailTab>('overview');
   
   const [isImportMenuOpen, setIsImportMenuOpen] = useState(false);
   const [importState, setImportState] = useState<ImportState>('none');
@@ -78,8 +81,8 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
   const importMenuRef = useRef<HTMLDivElement | null>(null);
   const formDataSnapshotRef = useRef<string>('');
 
-  const [viewMode, setViewMode] = useState<ViewMode>('list');
-  const [sortMode, setSortMode] = useState<SortMode>('recent');
+  const [viewMode, setViewMode] = useState<ViewMode>(() => config.defaultViewMode || 'list');
+  const [sortMode, setSortMode] = useState<SortMode>(() => config.defaultSortMode || 'recent');
   const [filters, setFilters] = useState<FilterState>(EMPTY_FILTERS);
   const [isSortMenuOpen, setIsSortMenuOpen] = useState(false);
   const [isFilterMenuOpen, setIsFilterMenuOpen] = useState(false);
@@ -132,7 +135,7 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
       setFormData(hydrated);
       formDataSnapshotRef.current = JSON.stringify(hydrated);
       setSelectedId(target.id);
-      setDetailTab('basic');
+      setDetailTab(settingsTargetTab || 'overview');
       setImportState('none');
       setIsGameFileStatusOpen(false);
       setIsShotTargetOpen(false);
@@ -140,7 +143,7 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
     if (onConsumeSettingsTarget) {
       onConsumeSettingsTarget();
     }
-  }, [settingsTargetId, instances, onConsumeSettingsTarget, config.defaultDiskGameRoot, config.defaultLocalGameRoot]);
+  }, [settingsTargetId, settingsTargetTab, instances, onConsumeSettingsTarget, config.defaultDiskGameRoot, config.defaultLocalGameRoot]);
 
   useEffect(() => {
     if (!selectedId) return;
@@ -755,7 +758,7 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
   const effectiveListSelection = instances.find(i => i.id === listSelectedId) || filteredSorted[0] || null;
 
   // ===== 新增：各操作处理函数 =====
-  const openDetail = (inst: GameInstance) => {
+  const openDetail = (inst: GameInstance, initialTab: DetailTab = 'overview') => {
     const hydrated = {
       ...inst,
       bottleName: inst.bottleName || (inst.runMode === 'parallels' ? (config.defaultPdVm || '') : (inst.runMode === 'crossover' ? (effectiveDefaultBottle) : '')),
@@ -765,7 +768,7 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
     setFormData(hydrated);
     formDataSnapshotRef.current = JSON.stringify(hydrated);
     setSelectedId(inst.id);
-    setDetailTab('basic');
+    setDetailTab(initialTab);
     setGridMenuId(null);
     setIsSortMenuOpen(false);
     setIsFilterMenuOpen(false);
@@ -773,7 +776,7 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
 
   const handleGoBack = () => {
     setSelectedId(null);
-    setDetailTab('basic');
+    setDetailTab('overview');
     setImportState('none');
     setGridMenuId(null);
   };
@@ -838,18 +841,18 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
   return (
     <div className="h-full flex relative">
       {/* ===== 左侧侧边栏 ===== */}
-      <aside className="w-1/4 min-w-[220px] max-w-[320px] flex flex-col shrink-0 border-r border-black/10 dark:border-white/10 rounded-2xl overflow-hidden my-3 ml-3">
-        <div className="flex-1 overflow-y-auto custom-scrollbar p-3 space-y-1">
+      <aside className="w-1/4 min-w-[220px] max-w-[300px] flex flex-col shrink-0 border-r border-slate-300/60 dark:border-white/[0.08] bg-slate-500/[0.03] dark:bg-black/10 rounded-l-2xl overflow-hidden my-3 ml-3">
+        <div className="flex-1 overflow-y-auto custom-scrollbar p-2.5 space-y-1">
           <SidebarNavItem
             active={!isEditing}
-            icon={<Boxes size={18} className="text-indigo-500 shrink-0" />}
+            icon={<Boxes size={17} className="text-indigo-500 shrink-0" />}
             label="全部实例"
             onClick={handleGoBack}
           >
-            {!isEditing && <span className="ml-auto text-xs px-1.5 py-0.5 rounded-full bg-black/5 dark:bg-white/10 text-gray-500 dark:text-white/50 shrink-0">{instances.length}</span>}
+            {!isEditing && <span className="ml-auto text-[11px] px-1.5 py-0.5 rounded-md bg-slate-500/10 dark:bg-white/10 text-slate-500 dark:text-slate-300 shrink-0 font-mono">{instances.length}</span>}
           </SidebarNavItem>
 
-          <div className="h-px bg-black/10 dark:bg-white/10 mx-2" />
+          <div className="h-px bg-slate-300/60 dark:bg-white/[0.08] mx-2 my-1.5" />
 
           {instances.map(inst => (
             <SidebarNavItem
@@ -863,19 +866,19 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
         </div>
 
         {/* 底部导入按钮 */}
-        <div className="p-3 border-t border-black/10 dark:border-white/10">
+        <div className="p-2.5 border-t border-slate-300/60 dark:border-white/[0.08]">
           <div className="relative" ref={importMenuRef}>
             <button
               onClick={() => { setIsImportMenuOpen(!isImportMenuOpen); }}
-              className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-all shadow-md hover:shadow-blue-500/30 active:scale-95"
+              className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-500 transition-all shadow-sm active:scale-[0.98]"
             >
-              <Plus size={16} /> 导入实例 <ChevronDown size={14} className={clsx("transition-transform duration-200", isImportMenuOpen && "rotate-180")} />
+              <Plus size={15} /> 导入实例 <ChevronDown size={14} className={clsx("transition-transform duration-200", isImportMenuOpen && "rotate-180")} />
             </button>
             <AnimatePresence>
               {isImportMenuOpen && (
-                <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 10 }} className="absolute bottom-full left-0 right-0 mb-2 bg-white dark:bg-[#252525] border border-black/10 dark:border-white/10 rounded-lg shadow-xl z-40 overflow-hidden">
-                  <button onClick={handleSingleImport} className="w-full text-left px-4 py-3 text-sm hover:bg-black/5 dark:hover:bg-white/5 transition-colors font-medium">单个导入</button>
-                  <button onClick={handleBatchImportClick} className="w-full text-left px-4 py-3 text-sm hover:bg-black/5 dark:hover:bg-white/5 transition-colors font-medium border-t border-black/5 dark:border-white/5">批量导入</button>
+                <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 8 }} className="absolute bottom-full left-0 right-0 mb-2 bg-[#f8fafc] dark:bg-[#1e222d] border border-slate-300/80 dark:border-white/10 rounded-xl shadow-xl z-40 overflow-hidden">
+                  <button onClick={handleSingleImport} className="w-full text-left px-4 py-2.5 text-sm hover:bg-indigo-500/10 hover:text-indigo-600 dark:hover:text-indigo-300 transition-colors font-medium">单个导入</button>
+                  <button onClick={handleBatchImportClick} className="w-full text-left px-4 py-2.5 text-sm hover:bg-indigo-500/10 hover:text-indigo-600 dark:hover:text-indigo-300 transition-colors font-medium border-t border-slate-200/80 dark:border-white/5">批量导入</button>
                 </motion.div>
               )}
             </AnimatePresence>
@@ -887,50 +890,75 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
       <main className="flex-1 h-full min-w-0 relative flex flex-col">
         {isEditing ? (
           /* ---------- 详情设置界面 ---------- */
-          <div className="flex-1 overflow-y-auto p-8 relative w-full custom-scrollbar">
+          <div className="flex-1 overflow-y-auto p-7 relative w-full custom-scrollbar">
             <div className="max-w-3xl mx-auto">
               {selectedId ? (
-                <div className="flex items-center justify-between gap-4 mb-6 flex-wrap">
-                  <div className="flex items-center gap-3 min-w-0">
-                    <h2 className="text-2xl font-bold truncate">{formData.name || '未命名实例'}</h2>
+                <div className="flex items-center justify-between gap-4 mb-5 flex-wrap">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <h2 className="text-xl font-bold tracking-tight truncate">{formData.name || '未命名实例'}</h2>
                     <div className="flex items-center gap-1 shrink-0">
-                      <BadgeToggleBtn active={!!formData.isStarred} activeClass="text-yellow-400" onClick={() => toggleBadge('isStarred')} title="星标">
-                        <Star size={20} fill={formData.isStarred ? 'currentColor' : 'none'} />
+                      <BadgeToggleBtn active={!!formData.isStarred} activeClass="text-amber-400" onClick={() => toggleBadge('isStarred')} title="星标">
+                        <Star size={18} fill={formData.isStarred ? 'currentColor' : 'none'} />
                       </BadgeToggleBtn>
-                      <BadgeToggleBtn active={!!formData.isPlaying} activeClass="text-green-500" onClick={() => toggleBadge('isPlaying')} title="正在游玩">
-                        <Gamepad2 size={20} />
+                      <BadgeToggleBtn active={!!formData.isPlaying} activeClass="text-emerald-500" onClick={() => toggleBadge('isPlaying')} title="正在游玩">
+                        <Gamepad2 size={18} />
                       </BadgeToggleBtn>
-                      <BadgeToggleBtn active={!!formData.isFinished} activeClass="text-blue-500" onClick={() => toggleBadge('isFinished')} title="已通关">
-                        <Flag size={20} fill={formData.isFinished ? 'currentColor' : 'none'} />
+                      <BadgeToggleBtn active={!!formData.isFinished} activeClass="text-indigo-500" onClick={() => toggleBadge('isFinished')} title="已通关">
+                        <Flag size={18} fill={formData.isFinished ? 'currentColor' : 'none'} />
                       </BadgeToggleBtn>
                     </div>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
                     <IconBtn title="打开文件夹" onClick={() => handleOpenExecutableFolder(formData.executablePath || '')}>
-                      <FolderOpen size={18} />
+                      <FolderOpen size={17} />
                     </IconBtn>
                     <IconBtn title="删除实例" onClick={() => setDeleteModal({ isOpen: true, instance: instances.find(i => i.id === selectedId)! })}>
-                      <Trash2 size={18} className="text-red-500" />
+                      <Trash2 size={17} className="text-rose-500" />
                     </IconBtn>
-                    <button onClick={handleLaunchCurrentDetail} className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors flex items-center gap-2 shadow-lg shadow-blue-500/30">
-                      <Play size={16} /> 启动实例
+                    <button onClick={handleLaunchCurrentDetail} className="px-4 py-1.5 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-500 transition-colors flex items-center gap-1.5 shadow-sm">
+                      <Play size={15} /> 启动实例
                     </button>
                   </div>
                 </div>
               ) : (
-                <div className="flex items-center justify-between mb-6">
-                  <h2 className="text-2xl font-bold">配置实例信息</h2>
+                <div className="flex items-center justify-between mb-5">
+                  <h2 className="text-xl font-bold tracking-tight">配置实例信息</h2>
                 </div>
               )}
 
               {/* Tab 导航 */}
-              <div className="flex items-center gap-1 border-b border-black/10 dark:border-white/10 mb-6">
+              <div className="flex items-center gap-1 border-b border-slate-300/60 dark:border-white/10 mb-6">
+                {selectedId && (
+                  <DetailTabButton label="概览" icon={<LayoutDashboard size={15} />} active={detailTab === 'overview'} onClick={() => setDetailTab('overview')} />
+                )}
                 <DetailTabButton label="基本信息" icon={<Info size={15} />} active={detailTab === 'basic'} onClick={() => setDetailTab('basic')} />
                 <DetailTabButton label="启动设置" icon={<SlidersHorizontal size={15} />} active={detailTab === 'launch'} onClick={() => setDetailTab('launch')} />
-                <DetailTabButton label="截图" icon={<Camera size={15} />} active={detailTab === 'screenshots'} onClick={() => setDetailTab('screenshots')} />
+                {selectedId && (
+                  <>
+                    <DetailTabButton label="截图" icon={<Camera size={15} />} active={detailTab === 'screenshots'} onClick={() => setDetailTab('screenshots')} />
+                    <DetailTabButton label="日志" icon={<Terminal size={15} />} active={detailTab === 'logs'} onClick={() => setDetailTab('logs')} />
+                  </>
+                )}
               </div>
 
               <div className="space-y-6">
+                {detailTab === 'overview' && selectedId && (
+                  <InstanceOverview
+                    instance={formData}
+                    screenshots={screenshots}
+                    onSwitchTab={(t) => setDetailTab(t)}
+                    onOpenFolder={() => handleOpenExecutableFolder(formData.executablePath || '')}
+                    onPreviewScreenshot={(shot) => setPreviewShot(shot)}
+                  />
+                )}
+
+                {detailTab === 'logs' && selectedId && (
+                  <GameLogPanel
+                    instanceId={selectedId}
+                    formData={formData}
+                    onUpdateFormData={(updates) => setFormData(prev => ({ ...prev, ...updates }))}
+                  />
+                )}
                 {detailTab === 'basic' && (
                 <>
                 <div>
@@ -1074,6 +1102,46 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
                 {detailTab === 'launch' && (
                 formData.runMode === 'crossover' ? (
                 <>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="min-w-0">
+                      <label className="block text-sm font-medium mb-2 truncate">区域语言环境 (LC_ALL / LANG)</label>
+                      <div className="relative">
+                        <select
+                          value={formData.locale || config.defaultLocale || 'zh_CN.UTF-8'}
+                          onChange={e => setFormData({ ...formData, locale: e.target.value })}
+                          className="w-full bg-black/5 dark:bg-white/5 border border-black/10 dark:border-white/10 rounded-lg px-4 py-2 pr-8 outline-none appearance-none transition-colors truncate"
+                        >
+                          <option value="zh_CN.UTF-8">简体中文 (zh_CN.UTF-8) · 汉化版推荐</option>
+                          <option value="ja_JP.UTF-8">日本语 (ja_JP.UTF-8) · 日文原版防乱码</option>
+                          <option value="zh_TW.UTF-8">繁體中文 (zh_TW.UTF-8)</option>
+                          <option value="en_US.UTF-8">English (en_US.UTF-8)</option>
+                        </select>
+                        <DropdownArrow />
+                      </div>
+                    </div>
+                    <div className="min-w-0">
+                      <label className="block text-sm font-medium mb-2 truncate">工作目录 (WorkDir，留空默认游戏目录)</label>
+                      <div className="flex gap-2">
+                        <input
+                          value={formData.workDir || ''}
+                          onChange={e => setFormData({ ...formData, workDir: e.target.value })}
+                          className="flex-1 bg-black/5 dark:bg-white/5 border border-black/10 dark:border-white/10 rounded-lg px-4 py-2 outline-none"
+                          placeholder="留空则使用 exe 所在目录"
+                        />
+                        <button
+                          onClick={async () => {
+                            const selected = await open({ directory: true, defaultPath: formData.workDir || undefined });
+                            if (selected && typeof selected === 'string') {
+                              setFormData({ ...formData, workDir: selected });
+                            }
+                          }}
+                          className="px-3.5 py-2 bg-black/5 dark:bg-white/10 rounded-lg hover:bg-black/10 dark:hover:bg-white/20 transition-colors"
+                        >
+                          <FolderOpen size={18} />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
                   <div className="grid grid-cols-2 gap-4">
                     <div className="min-w-0">
                       <label className="block text-sm font-medium mb-2 truncate">命令行参数</label>
@@ -1444,8 +1512,8 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
                 </div>
 
                 {/* 启动游戏 */}
-                <button onClick={handleLaunchSelected} className="flex items-center gap-2 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-all shadow-md hover:shadow-blue-500/30 active:scale-95">
-                  <Play size={16} /> 启动游戏
+                <button onClick={handleLaunchSelected} className="flex items-center gap-1.5 px-4 py-1.5 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-500 transition-all shadow-sm active:scale-[0.98]">
+                  <Play size={15} /> 启动游戏
                 </button>
               </div>
             </div>
@@ -1453,24 +1521,24 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
             {/* 实例列表 */}
             <div ref={cardsContainerRef} className="flex-1 overflow-y-auto px-8 pb-8 custom-scrollbar min-h-0">
               {instances.length === 0 ? (
-                <div className="h-full flex flex-col items-center justify-center text-gray-500">
-                  <Box size={64} className="mb-4 opacity-20" />
-                  <p>目前还没有任何实例，点击左下角导入吧！</p>
+                <div className="h-full flex flex-col items-center justify-center text-slate-400">
+                  <Box size={56} className="mb-3 opacity-25" />
+                  <p className="text-sm">目前还没有任何实例，点击左下角导入吧</p>
                 </div>
               ) : filteredSorted.length === 0 ? (
-                <div className="h-full flex flex-col items-center justify-center text-gray-500">
-                  <Box size={64} className="mb-4 opacity-20" />
-                  <p>没有符合当前筛选条件的实例</p>
+                <div className="h-full flex flex-col items-center justify-center text-slate-400">
+                  <Box size={56} className="mb-3 opacity-25" />
+                  <p className="text-sm">没有符合当前筛选条件的实例</p>
                 </div>
               ) : viewMode === 'list' ? (
-                /* ----- 列表视图 (参考 SJMCL: 灰色整体 + 细线分隔) ----- */
-                <div className="rounded-xl overflow-hidden bg-[#FAFAFA] dark:bg-[#2E2E2E] border border-black/5 dark:border-white/10 divide-y divide-black/5 dark:divide-white/10">
+                /* ----- 列表视图 ----- */
+                <div className="rounded-xl overflow-hidden bg-white/75 dark:bg-[#1b1e28]/85 border border-slate-300/60 dark:border-white/[0.08] divide-y divide-slate-200/70 dark:divide-white/[0.06] shadow-sm">
                   {filteredSorted.map(inst => (
                     <div key={inst.id} data-instance-id={inst.id} className={clsx(
-                      "flex items-center gap-4 px-4 py-3 transition-colors",
+                      "flex items-center gap-3.5 px-4 py-3 transition-colors",
                       effectiveListSelection?.id === inst.id
-                        ? "bg-black/5 dark:bg-white/10"
-                        : "hover:bg-black/5 dark:hover:bg-white/5"
+                        ? "bg-indigo-500/[0.08] dark:bg-indigo-500/[0.14]"
+                        : "hover:bg-slate-900/[0.03] dark:hover:bg-white/[0.04]"
                     )}>
                       {/* 单选圆形选择框 */}
                       <button
@@ -1479,11 +1547,11 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
                           onActiveInstanceIdChange?.(inst.id);
                         }}
                         className={clsx(
-                          "w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 transition-colors",
-                          effectiveListSelection?.id === inst.id ? "border-blue-500" : "border-gray-300 dark:border-gray-600 hover:border-blue-400"
+                          "w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 transition-colors",
+                          effectiveListSelection?.id === inst.id ? "border-indigo-500" : "border-slate-300 dark:border-slate-600 hover:border-indigo-400"
                         )}
                       >
-                        {effectiveListSelection?.id === inst.id && <div className="w-3 h-3 rounded-full bg-blue-500" />}
+                        {effectiveListSelection?.id === inst.id && <div className="w-2 h-2 rounded-full bg-indigo-500" />}
                       </button>
 
                       {/* 中间信息 */}
@@ -1493,14 +1561,15 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
                           setListSelectedId(inst.id);
                           onActiveInstanceIdChange?.(inst.id);
                         }}
+                        onDoubleClick={() => openDetail(inst, 'overview')}
                       >
                         <div className="flex items-center gap-2">
-                          <h3 className="font-semibold text-base text-gray-800 dark:text-gray-200 truncate" title={inst.name}>{inst.name}</h3>
-                          {inst.isStarred && <Star size={15} className="text-yellow-400 shrink-0" fill="currentColor" />}
-                          {inst.isPlaying && <Gamepad2 size={15} className="text-green-500 shrink-0" />}
-                          {inst.isFinished && <Flag size={15} className="text-blue-500 shrink-0" fill="currentColor" />}
+                          <h3 className="font-semibold text-sm text-slate-800 dark:text-slate-100 truncate" title={inst.name}>{inst.name}</h3>
+                          {inst.isStarred && <Star size={14} className="text-amber-400 shrink-0" fill="currentColor" />}
+                          {inst.isPlaying && <Gamepad2 size={14} className="text-emerald-500 shrink-0" />}
+                          {inst.isFinished && <Flag size={14} className="text-indigo-500 shrink-0" fill="currentColor" />}
                         </div>
-                        <div className="text-sm text-gray-500 truncate">
+                        <div className="text-xs text-slate-500 dark:text-slate-400 truncate mt-0.5">
                           {getRunModeLabel(inst)}
                           {inst.info ? <span className="ml-2">· {inst.info}</span> : null}
                         </div>
@@ -1509,18 +1578,18 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
                       {/* 右侧操作 */}
                       <div className="flex items-center gap-1 shrink-0">
                         <Tooltip label="打开文件夹">
-                          <button onClick={() => handleOpenExecutableFolder(inst.executablePath)} className="p-2 rounded-lg hover:bg-black/5 dark:hover:bg-white/10 transition-colors text-gray-500 hover:text-gray-800 dark:hover:text-white">
-                            <FolderOpen size={18} />
+                          <button onClick={() => handleOpenExecutableFolder(inst.executablePath)} className="p-2 rounded-lg hover:bg-slate-500/10 transition-colors text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-white">
+                            <FolderOpen size={16} />
                           </button>
                         </Tooltip>
-                        <Tooltip label="编辑实例">
-                          <button onClick={() => openDetail(inst)} className="p-2 rounded-lg hover:bg-black/5 dark:hover:bg-white/10 transition-colors text-gray-500 hover:text-blue-500">
-                            <Pencil size={18} />
+                        <Tooltip label="实例概览与设置">
+                          <button onClick={() => openDetail(inst, 'overview')} className="p-2 rounded-lg hover:bg-indigo-500/10 transition-colors text-slate-500 dark:text-slate-400 hover:text-indigo-500">
+                            <Pencil size={16} />
                           </button>
                         </Tooltip>
-                        <Tooltip label="删除实例">
-                          <button onClick={() => setDeleteModal({ isOpen: true, instance: inst })} className="p-2 rounded-lg hover:bg-black/5 dark:hover:bg-white/10 transition-colors text-gray-500 hover:text-red-500">
-                            <Trash2 size={18} />
+                        <Tooltip label="移除实例">
+                          <button onClick={() => setDeleteModal({ isOpen: true, instance: inst })} className="p-2 rounded-lg hover:bg-rose-500/10 transition-colors text-slate-500 dark:text-slate-400 hover:text-rose-500">
+                            <Trash2 size={16} />
                           </button>
                         </Tooltip>
                       </div>
@@ -1531,25 +1600,25 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
                 /* ----- 网格视图 ----- */
                 <div className="grid grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4">
                   {filteredSorted.map(inst => (
-                    <div data-instance-id={inst.id} key={inst.id} className="group relative rounded-xl overflow-hidden shadow-sm hover:shadow-xl bg-white dark:bg-[#252525] border border-black/5 dark:border-white/5 transition-all duration-300">
-                      <div className="aspect-[3/4] relative bg-black/5 dark:bg-black/50 overflow-hidden rounded-t-xl">
+                    <div data-instance-id={inst.id} key={inst.id} className="group relative rounded-xl overflow-hidden shadow-sm hover:shadow-lg bg-white/80 dark:bg-[#1b1e28]/90 border border-slate-300/60 dark:border-white/[0.08] transition-all duration-300">
+                      <div className="aspect-[3/4] relative bg-slate-200/60 dark:bg-black/40 overflow-hidden rounded-t-xl">
                         {inst.backgroundImage ? (
                           <img src={inst.backgroundImage.startsWith('/') ? convertFileSrc(inst.backgroundImage) : inst.backgroundImage} className="w-full h-full object-cover transition-all duration-300 group-hover:blur-sm group-hover:scale-105 group-hover:brightness-50" alt={inst.name} />
                         ) : (
-                          <div className="w-full h-full flex items-center justify-center transition-all duration-300 group-hover:blur-sm group-hover:brightness-50"><Box size={48} className="text-gray-400 opacity-30" /></div>
+                          <div className="w-full h-full flex items-center justify-center transition-all duration-300 group-hover:blur-sm group-hover:brightness-50"><Box size={44} className="text-slate-400 opacity-30" /></div>
                         )}
 
-                        <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-200 gap-3">
-                          <button onClick={(e) => { e.stopPropagation(); onLaunch(inst); }} className="p-2.5 bg-blue-500 text-white rounded-full hover:bg-blue-600 hover:scale-110 transition-all shadow-lg"><Play size={20} className="ml-0.5" /></button>
-                          <button onClick={(e) => { e.stopPropagation(); openDetail(inst); }} className="p-2.5 bg-white/20 backdrop-blur-md text-white rounded-full hover:bg-white/30 hover:scale-110 transition-all shadow-lg"><Settings size={20} /></button>
+                        <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-200 gap-2.5">
+                          <button onClick={(e) => { e.stopPropagation(); onLaunch(inst); }} className="p-2.5 bg-indigo-600 text-white rounded-full hover:bg-indigo-500 hover:scale-105 transition-all shadow-md"><Play size={18} className="ml-0.5" /></button>
+                          <button onClick={(e) => { e.stopPropagation(); openDetail(inst, 'overview'); }} className="p-2.5 bg-white/20 backdrop-blur-md text-white rounded-full hover:bg-white/30 hover:scale-105 transition-all shadow-md"><Settings size={18} /></button>
                         </div>
                       </div>
 
                       {/* 右上角标识图标 + ··· 菜单（置于图片容器外，避免被裁剪） */}
                       <div className="absolute top-2 right-2 flex items-center gap-1 z-20">
-                        {inst.isStarred && <span className="w-5 h-5 rounded-full bg-black/50 backdrop-blur-md flex items-center justify-center"><Star size={12} className="text-yellow-400" fill="currentColor" /></span>}
-                        {inst.isPlaying && <span className="w-5 h-5 rounded-full bg-black/50 backdrop-blur-md flex items-center justify-center"><Gamepad2 size={12} className="text-green-400" /></span>}
-                        {inst.isFinished && <span className="w-5 h-5 rounded-full bg-black/50 backdrop-blur-md flex items-center justify-center"><Flag size={12} className="text-blue-400" fill="currentColor" /></span>}
+                        {inst.isStarred && <span className="w-5 h-5 rounded-full bg-black/50 backdrop-blur-md flex items-center justify-center"><Star size={11} className="text-amber-400" fill="currentColor" /></span>}
+                        {inst.isPlaying && <span className="w-5 h-5 rounded-full bg-black/50 backdrop-blur-md flex items-center justify-center"><Gamepad2 size={11} className="text-emerald-400" /></span>}
+                        {inst.isFinished && <span className="w-5 h-5 rounded-full bg-black/50 backdrop-blur-md flex items-center justify-center"><Flag size={11} className="text-indigo-400" fill="currentColor" /></span>}
                         <div className="relative">
                           <button onClick={(e) => { e.stopPropagation(); setGridMenuId(prev => prev === inst.id ? null : inst.id); }} className="w-5 h-5 rounded-full bg-black/50 backdrop-blur-md flex items-center justify-center text-white hover:bg-black/70 transition-colors">
                             <Ellipsis size={12} />
@@ -1557,15 +1626,15 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
                           {gridMenuId === inst.id && (
                             <>
                               <div className="fixed inset-0 z-30" onClick={() => setGridMenuId(null)} />
-                              <div className="absolute right-0 top-full mt-1 w-44 bg-white dark:bg-[#252525] border border-black/10 dark:border-white/10 rounded-lg shadow-xl z-40 overflow-hidden">
-                                <button onClick={() => { setGridMenuId(null); handleOpenExecutableFolder(inst.executablePath); }} className="w-full text-left px-4 py-3 text-sm hover:bg-black/5 dark:hover:bg-white/5 transition-colors flex items-center gap-2">
-                                  <FolderOpen size={14} /> 打开文件夹
+                              <div className="absolute right-0 top-full mt-1 w-40 bg-[#f8fafc] dark:bg-[#1e222d] border border-slate-300/80 dark:border-white/10 rounded-xl shadow-xl z-40 overflow-hidden">
+                                <button onClick={() => { setGridMenuId(null); handleOpenExecutableFolder(inst.executablePath); }} className="w-full text-left px-3.5 py-2.5 text-xs font-medium hover:bg-slate-500/10 transition-colors flex items-center gap-2">
+                                  <FolderOpen size={13} /> 打开文件夹
                                 </button>
-                                <button onClick={() => { setGridMenuId(null); openDetail(inst); }} className="w-full text-left px-4 py-3 text-sm hover:bg-black/5 dark:hover:bg-white/5 transition-colors flex items-center gap-2 border-t border-black/5 dark:border-white/5">
-                                  <Pencil size={14} /> 编辑实例
+                                <button onClick={() => { setGridMenuId(null); openDetail(inst, 'overview'); }} className="w-full text-left px-3.5 py-2.5 text-xs font-medium hover:bg-slate-500/10 transition-colors flex items-center gap-2 border-t border-slate-200/70 dark:border-white/5">
+                                  <Pencil size={13} /> 概览与设置
                                 </button>
-                                <button onClick={() => { setGridMenuId(null); setDeleteModal({ isOpen: true, instance: inst }); }} className="w-full text-left px-4 py-3 text-sm hover:bg-red-500/10 transition-colors flex items-center gap-2 border-t border-black/5 dark:border-white/5 text-red-500">
-                                  <Trash2 size={14} /> 删除实例
+                                <button onClick={() => { setGridMenuId(null); setDeleteModal({ isOpen: true, instance: inst }); }} className="w-full text-left px-3.5 py-2.5 text-xs font-medium hover:bg-rose-500/10 transition-colors flex items-center gap-2 border-t border-slate-200/70 dark:border-white/5 text-rose-500">
+                                  <Trash2 size={13} /> 移除实例
                                 </button>
                               </div>
                             </>
@@ -1573,9 +1642,9 @@ export function InstancesPage({ instances, setInstances, onLaunch, settingsTarge
                         </div>
                       </div>
 
-                      <div className="p-3">
-                        <h3 className="font-semibold text-[14px] truncate text-gray-800 dark:text-gray-200" title={inst.name}>{inst.name}</h3>
-                        <p className="text-xs text-gray-500 truncate mt-0.5">
+                      <div className="p-2.5">
+                        <h3 className="font-semibold text-[13px] truncate text-slate-800 dark:text-slate-100" title={inst.name}>{inst.name}</h3>
+                        <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate mt-0.5">
                           {getRunModeLabel(inst)}
                         </p>
                       </div>
@@ -2053,10 +2122,10 @@ function DetailTabButton({ label, icon, active, onClick }: { label: string; icon
     <button
       onClick={onClick}
       className={clsx(
-        "flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors",
+        "flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold border-b-2 -mb-px transition-colors",
         active
-          ? "border-blue-500 text-blue-500"
-          : "border-transparent text-gray-500 dark:text-white/50 hover:text-gray-800 dark:hover:text-white/90"
+          ? "border-indigo-500 text-indigo-600 dark:text-indigo-300"
+          : "border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-white"
       )}
     >
       {icon} {label}

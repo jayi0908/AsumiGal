@@ -287,30 +287,30 @@ export function DiscoveryPage() {
   return (
     <div className="h-full flex relative">
       {/* ===== 左侧导航 ===== */}
-      <aside className="w-1/4 min-w-[220px] max-w-[320px] flex flex-col shrink-0 border-r border-black/10 dark:border-white/10 rounded-2xl overflow-hidden my-3 ml-3">
-        <div className="flex-1 overflow-y-auto custom-scrollbar p-3 space-y-1">
+      <aside className="w-1/4 min-w-[220px] max-w-[300px] flex flex-col shrink-0 border-r border-slate-300/60 dark:border-white/[0.08] bg-slate-500/[0.03] dark:bg-black/10 rounded-l-2xl overflow-hidden my-3 ml-3">
+        <div className="flex-1 overflow-y-auto custom-scrollbar p-2.5 space-y-1">
           <SidebarNavItem
             active={false}
-            icon={<Search size={18} className="text-indigo-500 shrink-0" />}
+            icon={<Search size={17} className="text-indigo-500 shrink-0" />}
             label="搜索"
             onClick={() => setIsSearchOpen(true)}
           />
           <SidebarNavItem
             active={activeItem === 'news'}
-            icon={<MessagesSquare size={18} className="text-indigo-500 shrink-0" />}
+            icon={<MessagesSquare size={17} className="text-indigo-500 shrink-0" />}
             label="月幕新闻"
             onClick={() => setActiveItem('news')}
           />
           <SidebarNavItem
             active={activeItem === 'touchgal'}
-            icon={<Gamepad2 size={18} className="text-indigo-500 shrink-0" />}
-            label="TouchGal 搜索"
+            icon={<Gamepad2 size={17} className="text-indigo-500 shrink-0" />}
+            label="TouchGal"
             onClick={() => setActiveItem('touchgal')}
           />
           <SidebarNavItem
             active={activeItem === 'vndb'}
-            icon={<BookOpen size={18} className="text-indigo-500 shrink-0" />}
-            label="VNDB 搜索"
+            icon={<BookOpen size={17} className="text-indigo-500 shrink-0" />}
+            label="VNDB"
             onClick={() => setActiveItem('vndb')}
           />
         </div>
@@ -395,8 +395,8 @@ export function DiscoveryPage() {
                         key={res.id}
                         onClick={() => openUrl(res.url)}
                         className={clsx(
-                          "group flex flex-col rounded-xl overflow-hidden border transition-all duration-300 hover:shadow-xl hover:-translate-y-1 cursor-pointer",
-                          isDark ? "border-white/10 bg-[#1a1a1c]" : "border-gray-200 bg-white"
+                          "group flex flex-col rounded-xl overflow-hidden border transition-all duration-300 hover:shadow-lg hover:-translate-y-0.5 cursor-pointer",
+                          isDark ? "border-white/[0.08] bg-[#1b1e28]/85" : "border-slate-300/60 bg-white/80"
                         )}
                       >
                         <div className="aspect-[16/9] w-full overflow-hidden bg-gray-200 dark:bg-gray-800 relative">
@@ -485,8 +485,8 @@ export function DiscoveryPage() {
                   <article 
                       key={article.topicId} 
                       className={clsx(
-                          "group flex flex-col rounded-xl overflow-hidden border transition-all duration-300 hover:shadow-xl hover:-translate-y-1 cursor-pointer h-full", 
-                          isDark ? "border-white/10 bg-[#1a1a1c]" : "border-gray-200 bg-white"
+                          "group flex flex-col rounded-xl overflow-hidden border transition-all duration-300 hover:shadow-lg hover:-translate-y-0.5 cursor-pointer h-full", 
+                          isDark ? "border-white/[0.08] bg-[#1b1e28]/85" : "border-slate-300/60 bg-white/80"
                       )}
                       onClick={() => handleCardClick(article.topicId)}
                   >

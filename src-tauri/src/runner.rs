@@ -1,8 +1,9 @@
 use std::fs;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use tauri::{AppHandle, Emitter, Manager, command};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::thread;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
@@ -21,12 +22,101 @@ pub struct WineConfig {
     pub screenshot_dir: Option<String>,
     /// 截图目标应用："game"（默认，实例游戏程序）| "focused"（当前焦点应用）
     pub screenshot_target: Option<String>,
+    /// 区域语言："zh_CN.UTF-8" | "ja_JP.UTF-8" | "en_US.UTF-8"
+    pub locale: Option<String>,
+    /// Wine 调试日志级别："-all" | "+err,+warn"
+    pub wine_debug: Option<String>,
 }
 
 #[derive(serde::Serialize, Clone)]
 struct GameFinishedPayload {
     instance_id: String,
     duration_sec: u64,
+}
+
+#[derive(serde::Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct GameLogLinePayload {
+    pub instance_id: String,
+    pub timestamp: String,
+    pub level: String,
+    pub line: String,
+}
+
+const MAX_LOG_LINES_PER_INSTANCE: usize = 800;
+
+static INSTANCE_LOGS: OnceLock<Mutex<HashMap<String, Vec<GameLogLinePayload>>>> = OnceLock::new();
+
+fn instance_logs() -> &'static Mutex<HashMap<String, Vec<GameLogLinePayload>>> {
+    INSTANCE_LOGS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn now_hms() -> String {
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    // 转为东八区或本地简单 HH:MM:SS（使用 date 命令兜底）
+    let h = ((secs + 8 * 3600) % 86400) / 3600;
+    let m = (secs % 3600) / 60;
+    let s = secs % 60;
+    format!("{:02}:{:02}:{:02}", h, m, s)
+}
+
+fn classify_log_level(line: &str) -> &'static str {
+    let lower = line.to_lowercase();
+    if lower.contains("err:") || lower.contains("error") || lower.contains("exception") || lower.contains("fatal") || lower.contains("失败") {
+        "error"
+    } else if lower.contains("warn:") || lower.contains("warning") || lower.contains("fixme:") {
+        "warn"
+    } else if lower.starts_with("[asumigal]") {
+        "system"
+    } else {
+        "info"
+    }
+}
+
+pub fn append_instance_log(app: Option<&AppHandle>, instance_id: &str, line: impl Into<String>) {
+    let line_str = line.into();
+    if line_str.trim().is_empty() {
+        return;
+    }
+    let level = classify_log_level(&line_str).to_string();
+    let entry = GameLogLinePayload {
+        instance_id: instance_id.to_string(),
+        timestamp: now_hms(),
+        level,
+        line: line_str,
+    };
+
+    if let Ok(mut map) = instance_logs().lock() {
+        let vec = map.entry(instance_id.to_string()).or_default();
+        if vec.len() >= MAX_LOG_LINES_PER_INSTANCE {
+            let drain_count = vec.len() - MAX_LOG_LINES_PER_INSTANCE + 1;
+            vec.drain(0..drain_count);
+        }
+        vec.push(entry.clone());
+    }
+
+    if let Some(handle) = app {
+        let _ = handle.emit("game-log-line", entry);
+    }
+}
+
+#[command]
+pub fn get_instance_logs(instance_id: String) -> Vec<GameLogLinePayload> {
+    instance_logs()
+        .lock()
+        .ok()
+        .and_then(|map| map.get(&instance_id).cloned())
+        .unwrap_or_default()
+}
+
+#[command]
+pub fn clear_instance_logs(instance_id: String) {
+    if let Ok(mut map) = instance_logs().lock() {
+        map.remove(&instance_id);
+    }
 }
 
 #[derive(Clone)]
@@ -683,27 +773,112 @@ fn extract_vm_name(path: &str) -> Option<String> {
     None
 }
 
+fn resolve_prlctl_bin() -> &'static str {
+    if Path::new("/usr/local/bin/prlctl").exists() {
+        "/usr/local/bin/prlctl"
+    } else if Path::new("/Applications/Parallels Desktop.app/Contents/MacOS/prlctl").exists() {
+        "/Applications/Parallels Desktop.app/Contents/MacOS/prlctl"
+    } else {
+        "prlctl"
+    }
+}
+
+/// 定位 Parallels 虚拟机对应的文件资源管理器代理 .app（兼容中文与英文系统）
+fn find_parallels_explorer_app(vm_dir: &Path) -> Option<PathBuf> {
+    for candidate in ["文件资源管理器.app", "File Explorer.app", "Windows Explorer.app"] {
+        let p = vm_dir.join(candidate);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    if let Ok(entries) = fs::read_dir(vm_dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.extension().and_then(|e| e.to_str()) == Some("app") {
+                return Some(p);
+            }
+        }
+    }
+    None
+}
+
+/// 检查 macOS 宿主进程表是否已存在该游戏的 Parallels 融合模式代理进程 (WinAppHelper)
+fn find_parallels_host_helper_pids(exe_name_lower: &str, processes: &[ProcessInfo]) -> Vec<u32> {
+    if exe_name_lower.is_empty() {
+        return Vec::new();
+    }
+    let stem = exe_name_lower.trim_end_matches(".exe");
+    processes
+        .iter()
+        .filter(|p| {
+            let cmd = p.command.to_lowercase();
+            cmd.contains("winapphelper")
+                && (cmd.contains(exe_name_lower) || (!stem.is_empty() && cmd.contains(stem)))
+        })
+        .map(|p| p.pid)
+        .collect()
+}
+
+/// 检查 Parallels 虚拟机在宿主机上是否仍在运行：
+/// 先通过宿主机进程表快速判断 prl_vm_app 是否存活（零开销、不打扰 VM），
+/// 找不到时再用 `prlctl status`（宿主机侧查询，不进入 Guest OS）兜底。
+fn is_parallels_vm_running_on_host(vm_name: &str, processes: &[ProcessInfo]) -> bool {
+    let vm_trimmed = vm_name.trim_matches(|c| c == '{' || c == '}').to_lowercase();
+    let has_vm_proc = processes.iter().any(|p| {
+        let cmd = p.command.to_lowercase();
+        (cmd.contains("prl_vm_app") || cmd.contains("parallels desktop"))
+            && (vm_trimmed.is_empty() || cmd.contains(&vm_trimmed) || cmd.contains("prl_vm_app"))
+    });
+    if has_vm_proc && vm_name.is_empty() {
+        return true;
+    }
+    if !vm_name.is_empty() {
+        if let Ok(out) = Command::new(resolve_prlctl_bin())
+            .args(["status", vm_name])
+            .output()
+        {
+            let s = String::from_utf8_lossy(&out.stdout).to_lowercase();
+            // "exist running" 表示正在运行；suspended / stopped / paused 均视为非运行
+            return s.contains("running");
+        }
+    }
+    has_vm_proc
+}
+
 #[command]
 pub async fn launch_game(app: AppHandle, instance_id: String, config: WineConfig) -> Result<u32, String> {
     println!("正在启动实例 ID: {}, 路径: {}", instance_id, config.game_exe);
     let mode = config.run_mode.as_deref().unwrap_or("crossover");
+    append_instance_log(
+        Some(&app),
+        &instance_id,
+        format!("[AsumiGal] 准备启动实例 (模式: {}, 路径: {})", mode, config.game_exe),
+    );
 
     if mode == "parallels" {
-        let vm_app_path = expand_tilde(&config.bottle_path).join("文件资源管理器.app");
-        if !vm_app_path.exists() {
-            return Err(format!("找不到 Parallels 虚拟机路径: {:?}", vm_app_path));
-        }
+        let vm_dir = expand_tilde(&config.bottle_path);
+        let vm_app_path = find_parallels_explorer_app(&vm_dir).ok_or_else(|| {
+            let msg = format!("找不到 Parallels 虚拟机应用目录或代理启动器: {:?}", vm_dir);
+            append_instance_log(Some(&app), &instance_id, format!("[AsumiGal] 错误: {}", msg));
+            msg
+        })?;
 
         let exe_path = expand_tilde(&config.game_exe);
         if !exe_path.exists() {
-            return Err(format!("找不到可执行文件，可能位于外接硬盘但未连接，请检查磁盘连接情况: {:?}", config.game_exe));
+            let msg = format!("找不到可执行文件，可能位于外接硬盘但未连接，请检查磁盘连接情况: {:?}", config.game_exe);
+            append_instance_log(Some(&app), &instance_id, format!("[AsumiGal] 错误: {}", msg));
+            return Err(msg);
         }
 
         // 获取要轮询的虚拟机名字和进程名
         let exe_name = exe_path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
         let vm_name = extract_vm_name(&config.bottle_path).unwrap_or_else(|| "".to_string());
+        append_instance_log(
+            Some(&app),
+            &instance_id,
+            format!("[AsumiGal] 通过 Parallels 代理拉起: VM={}, EXE={}", vm_name, exe_name),
+        );
 
-        // 使用 open 启动，这里不再需要 -W，因为它无论如何都会闪退，我们改用手动轮询
         let mut child = Command::new("open")
             .arg("-a")
             .arg(&vm_app_path)
@@ -712,7 +887,7 @@ pub async fn launch_game(app: AppHandle, instance_id: String, config: WineConfig
             .map_err(|e| format!("无法启动 Parallels Desktop 实例: {}", e))?;
 
         let pid = child.id();
-        let exe_for_track = expand_tilde(&config.game_exe).to_string_lossy().to_string();
+        let exe_for_track = exe_path.to_string_lossy().to_string();
         track_running_instance(
             &instance_id,
             pid,
@@ -728,58 +903,92 @@ pub async fn launch_game(app: AppHandle, instance_id: String, config: WineConfig
 
             thread::spawn(move || {
                 let start_time = Instant::now();
-                
-                // 给 Parallels Desktop 启动虚拟机、挂载网络磁盘、以及 Windows 拉起游戏预留 15 秒的缓冲时间
-                thread::sleep(std::time::Duration::from_secs(15));
-                
+                let _ = child.wait();
+
+                // 给 Parallels Desktop 启动虚拟机、挂载共享盘以及拉起游戏预留 15 秒缓冲
+                thread::sleep(Duration::from_secs(15));
+
                 if !vm_name.is_empty() && !exe_name.is_empty() {
-                    let mut miss_count = 0;
+                    let prlctl_bin = resolve_prlctl_bin();
                     let exe_name_lower = exe_name.to_lowercase();
-                    
-                    // Windows 的 tasklist 命令最多只显示进程名的前 25 个字符，按字符安全截断防止 UTF-8 panic
+                    // Windows tasklist /FI "IMAGENAME eq xxx" 精确过滤，且 /NH 免表头减少输出体积
+                    let filter_arg = format!("IMAGENAME eq {}", exe_name);
+                    // 兼容进程名超长被截断的场景（前 25 字符匹配）
                     let search_name: String = exe_name_lower.chars().take(25).collect();
 
-                    loop {
-                        // 尝试通过 prlctl (Parallels 命令行工具) 直接查看虚拟机内部的进程表
-                        let output = Command::new("/usr/local/bin/prlctl")
-                            .arg("exec")
-                            .arg(&vm_name)
-                            .arg("tasklist")
-                            .output()
-                            .or_else(|_| {
-                                // 降级：如果 /usr/local/bin 里没有，尝试通过全局 PATH 查找
-                                Command::new("prlctl").arg("exec").arg(&vm_name).arg("tasklist").output()
-                            });
+                    let mut miss_count = 0u32;
+                    let mut last_guest_poll: Option<Instant> = None;
+                    // 关键优化：Guest 内部 prlctl exec 轮询间隔放宽到 20 秒，避免频繁在 Windows 内拉起 conhost/tasklist 造成游戏掉帧卡顿
+                    let guest_poll_interval = Duration::from_secs(20);
+                    let host_tick = Duration::from_secs(3);
 
-                        match output {
-                            Ok(out) => {
-                                let stdout = String::from_utf8_lossy(&out.stdout).to_lowercase();
-                                if stdout.contains(&search_name) {
-                                    miss_count = 0; // 找到了游戏进程，重置丢失计数
-                                } else {
-                                    miss_count += 1; // 没找到该游戏
+                    loop {
+                        // 实例如果已被手动停止（从 RUNNING_INSTANCES 移除），立即退出监听线程
+                        if get_tracked_instance(&i_id).is_none() {
+                            return;
+                        }
+
+                        let host_procs = list_processes().unwrap_or_default();
+
+                        // 1) 宿主机侧零打扰检查：如果整个虚拟机已挂起或关闭，直接判定游戏结束
+                        if !is_parallels_vm_running_on_host(&vm_name, &host_procs) {
+                            append_instance_log(Some(&app_handle), &i_id, "[AsumiGal] 检测到 Parallels 虚拟机已挂起或关闭");
+                            break;
+                        }
+
+                        // 2) 宿主机侧零打扰检查（Coherence 融合模式）：
+                        //    如果宿主机能直接看到该游戏的 WinAppHelper 代理进程，说明游戏一定还在运行，无需执行 prlctl exec 打扰虚拟机！
+                        let helper_pids = find_parallels_host_helper_pids(&exe_name_lower, &host_procs);
+                        if !helper_pids.is_empty() {
+                            miss_count = 0;
+                            update_running_instance_real_pids(&i_id, helper_pids);
+                            thread::sleep(host_tick);
+                            continue;
+                        }
+
+                        // 3) 非融合模式或无宿主代理进程时，仅每 20 秒执行一次轻量级定向查询：
+                        //    使用 `tasklist /NH /FI "IMAGENAME eq <exe>"` 替代全量 `tasklist`
+                        let should_poll_guest = last_guest_poll
+                            .map(|t| t.elapsed() >= guest_poll_interval)
+                            .unwrap_or(true);
+
+                        if should_poll_guest {
+                            last_guest_poll = Some(Instant::now());
+                            let output = Command::new(prlctl_bin)
+                                .args(["exec", &vm_name, "tasklist", "/NH", "/FI", &filter_arg])
+                                .output();
+
+                            match output {
+                                Ok(out) => {
+                                    let stdout = String::from_utf8_lossy(&out.stdout).to_lowercase();
+                                    if stdout.contains(&search_name) {
+                                        miss_count = 0;
+                                    } else {
+                                        miss_count += 1;
+                                    }
                                 }
-                            },
-                            Err(_) => {
-                                // 执行出错 (可能是虚拟机正处于未唤醒状态/挂起状态)
-                                miss_count += 1;
+                                Err(_) => {
+                                    miss_count += 1;
+                                }
+                            }
+
+                            // 连续 2 次（间隔 20s）确认进程不存在，判定游戏已关闭
+                            if miss_count >= 2 {
+                                break;
                             }
                         }
 
-                        // 如果连续 3 次（15 秒）在 Windows 后台都没看到这个 exe，证明游戏被玩家关闭了
-                        if miss_count >= 3 {
-                            break;
-                        }
-                        
-                        thread::sleep(std::time::Duration::from_secs(5));
+                        thread::sleep(host_tick);
                     }
-                } else {
-                    // 如果出异常解析不出名字，退化为旧式的 wait（立刻结束）
-                    let _ = child.wait();
                 }
 
                 let duration = start_time.elapsed().as_secs();
                 println!("游戏 {} 已退出，总时长: {}秒", i_id, duration);
+                append_instance_log(
+                    Some(&app_handle),
+                    &i_id,
+                    format!("[AsumiGal] 实例运行结束，本次游玩时长 {} 秒", duration),
+                );
                 remove_running_instance(&i_id);
                 let _ = app_handle.emit("game-finished", GameFinishedPayload {
                     instance_id: i_id,
@@ -798,26 +1007,35 @@ pub async fn launch_game(app: AppHandle, instance_id: String, config: WineConfig
                 if let Ok(script_dir) = app.path().resolve("scripts", tauri::path::BaseDirectory::AppLocalData) {
                     let script_path = script_dir.join(format!("{}.sh", script_name));
                     if script_path.exists() {
-                        let log_path = "/tmp/asumigal_script.log";
-                        if let Ok(log_file) = std::fs::File::create(log_path) {
-                            if let Ok(stderr_file) = log_file.try_clone() {
-                                match Command::new("sh")
-                                    .arg(&script_path)
-                                    .stdout(log_file)
-                                    .stderr(stderr_file)
-                                    .status()
-                                {
-                                    Ok(status) => {
-                                        if !status.success() {
-                                            println!("脚本 {:?} 执行失败，退出码: {:?}", script_path, status.code());
-                                        } else {
-                                            println!("脚本 {:?} 执行成功", script_path);
-                                        }
-                                    }
-                                    Err(e) => {
-                                        println!("无法执行脚本 {:?}: {}", script_path, e);
-                                    }
+                        append_instance_log(
+                            Some(&app),
+                            &instance_id,
+                            format!("[AsumiGal] 执行前置脚本: {:?}", script_path),
+                        );
+                        match Command::new("sh").arg(&script_path).output() {
+                            Ok(out) => {
+                                for line in String::from_utf8_lossy(&out.stdout).lines() {
+                                    append_instance_log(Some(&app), &instance_id, line);
                                 }
+                                for line in String::from_utf8_lossy(&out.stderr).lines() {
+                                    append_instance_log(Some(&app), &instance_id, line);
+                                }
+                                if !out.status.success() {
+                                    append_instance_log(
+                                        Some(&app),
+                                        &instance_id,
+                                        format!("[AsumiGal] 脚本执行失败，退出码: {:?}", out.status.code()),
+                                    );
+                                } else {
+                                    append_instance_log(Some(&app), &instance_id, "[AsumiGal] 前置脚本执行完成");
+                                }
+                            }
+                            Err(e) => {
+                                append_instance_log(
+                                    Some(&app),
+                                    &instance_id,
+                                    format!("[AsumiGal] 无法执行脚本: {}", e),
+                                );
                             }
                         }
                     }
@@ -827,7 +1045,9 @@ pub async fn launch_game(app: AppHandle, instance_id: String, config: WineConfig
 
         let app_path = expand_tilde(&config.game_exe);
         if !app_path.exists() {
-            return Err(format!("找不到指定的原生应用: {:?}", app_path));
+            let msg = format!("找不到指定的原生应用: {:?}", app_path);
+            append_instance_log(Some(&app), &instance_id, format!("[AsumiGal] 错误: {}", msg));
+            return Err(msg);
         }
 
         let mut child = Command::new("open")
@@ -856,6 +1076,11 @@ pub async fn launch_game(app: AppHandle, instance_id: String, config: WineConfig
                 let _ = child.wait();
                 let duration = start_time.elapsed().as_secs();
                 println!("游戏 {} 已退出，总时长: {}秒", i_id, duration);
+                append_instance_log(
+                    Some(&app_handle),
+                    &i_id,
+                    format!("[AsumiGal] 原生应用已退出，本次游玩时长 {} 秒", duration),
+                );
                 remove_running_instance(&i_id);
                 let _ = app_handle.emit("game-finished", GameFinishedPayload {
                     instance_id: i_id,
@@ -869,7 +1094,9 @@ pub async fn launch_game(app: AppHandle, instance_id: String, config: WineConfig
 
     let game_path = expand_tilde(&config.game_exe);
     if !game_path.exists() {
-        return Err(format!("找不到可执行文件，可能位于外接硬盘但未连接，请检查磁盘连接情况: {:?}", config.game_exe));
+        let msg = format!("找不到可执行文件，可能位于外接硬盘但未连接，请检查磁盘连接情况: {:?}", config.game_exe);
+        append_instance_log(Some(&app), &instance_id, format!("[AsumiGal] 错误: {}", msg));
+        return Err(msg);
     }
 
     // 定位 CrossOver
@@ -877,7 +1104,9 @@ pub async fn launch_game(app: AppHandle, instance_id: String, config: WineConfig
     let crossover_bin = crossover_app_dir.join("Contents/SharedSupport/CrossOver/bin/wine");
 
     if !crossover_bin.exists() {
-        return Err(format!("未找到 CrossOver 核心文件，请检查设置路径: {:?}", crossover_bin));
+        let msg = format!("未找到 CrossOver 核心文件，请检查设置路径: {:?}", crossover_bin);
+        append_instance_log(Some(&app), &instance_id, format!("[AsumiGal] 错误: {}", msg));
+        return Err(msg);
     }
 
     // 解析容器名
@@ -887,12 +1116,24 @@ pub async fn launch_game(app: AppHandle, instance_id: String, config: WineConfig
         .and_then(|n| n.to_str())
         .ok_or("无法解析容器名称")?;
 
+    let locale_val = config
+        .locale
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or("zh_CN.UTF-8");
+    let wine_debug_val = config
+        .wine_debug
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or("-all");
+
     // 构建命令
     let mut cmd = Command::new(&crossover_bin);
     cmd.env("CX_BOTTLE", bottle_name);
     cmd.env("WINEPREFIX", &bottle_path_buf);
-    cmd.env("LC_ALL", "zh_CN.UTF-8");
-    cmd.env("WINEDEBUG", "-all");
+    cmd.env("LC_ALL", locale_val);
+    cmd.env("LANG", locale_val);
+    cmd.env("WINEDEBUG", wine_debug_val);
 
     // 附加环境变量（支持空格或换行分隔的 KEY=VALUE 形式）
     if let Some(env_vars) = &config.env_vars {
@@ -909,12 +1150,11 @@ pub async fn launch_game(app: AppHandle, instance_id: String, config: WineConfig
     }
 
     // 工作目录：优先用户指定，否则默认使用可执行文件所在目录
-    // （与 CrossOver「运行程序」行为一致，确保依赖相对路径的汉化补丁与资源能被正确加载）
     let work_dir = match config.work_dir.as_ref() {
         Some(wd) if !wd.trim().is_empty() => Some(wd.trim().to_string()),
         _ => game_path.parent().map(|p| p.to_string_lossy().into_owned()),
     };
-    if let Some(wd) = work_dir {
+    if let Some(wd) = &work_dir {
         cmd.arg("--workdir").arg(wd);
     }
 
@@ -927,9 +1167,53 @@ pub async fn launch_game(app: AppHandle, instance_id: String, config: WineConfig
         }
     }
 
+    append_instance_log(
+        Some(&app),
+        &instance_id,
+        format!(
+            "[AsumiGal] CrossOver 启动参数: Bottle={}, LC_ALL={}, WINEDEBUG={}, WorkDir={}",
+            bottle_name,
+            locale_val,
+            wine_debug_val,
+            work_dir.as_deref().unwrap_or("(default)")
+        ),
+    );
+
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
     // 启动子进程
-    let child = cmd.spawn().map_err(|e| format!("启动失败: {}", e))?;
+    let mut child = cmd.spawn().map_err(|e| {
+        let msg = format!("启动失败: {}", e);
+        append_instance_log(Some(&app), &instance_id, format!("[AsumiGal] 错误: {}", msg));
+        msg
+    })?;
     let pid = child.id();
+    append_instance_log(
+        Some(&app),
+        &instance_id,
+        format!("[AsumiGal] CrossOver 引导进程已拉起 (PID: {})", pid),
+    );
+
+    if let Some(stdout) = child.stdout.take() {
+        let app_out = app.clone();
+        let id_out = instance_id.clone();
+        thread::spawn(move || {
+            let reader = BufReader::new(stdout);
+            for line in reader.lines().map_while(Result::ok) {
+                append_instance_log(Some(&app_out), &id_out, line);
+            }
+        });
+    }
+    if let Some(stderr) = child.stderr.take() {
+        let app_err = app.clone();
+        let id_err = instance_id.clone();
+        thread::spawn(move || {
+            let reader = BufReader::new(stderr);
+            for line in reader.lines().map_while(Result::ok) {
+                append_instance_log(Some(&app_err), &id_err, line);
+            }
+        });
+    }
     let exe_for_track = game_path.to_string_lossy().to_string();
     track_running_instance(
         &instance_id,
@@ -1021,10 +1305,12 @@ pub async fn launch_game(app: AppHandle, instance_id: String, config: WineConfig
 
                 if !continue_logged && loader_pids.is_empty() && !real_pids.is_empty() {
                     continue_logged = true;
-                    println!(
-                        "实例 {} 的 Loader 已退出，继续追踪真实游戏进程 {:?}（计时延续）",
-                        i_id, real_pids
+                    let msg = format!(
+                        "[AsumiGal] Loader 引导已移交，继续追踪真实游戏进程 {:?}（计时延续）",
+                        real_pids
                     );
+                    println!("{}", msg);
+                    append_instance_log(Some(&app_handle), &i_id, msg);
                 }
 
                 let child_exited = match child.try_wait() {
@@ -1048,6 +1334,11 @@ pub async fn launch_game(app: AppHandle, instance_id: String, config: WineConfig
 
             let duration = start_time.elapsed().as_secs();
             println!("游戏 {} 完全退出，时长: {}秒", i_id, duration);
+            append_instance_log(
+                Some(&app_handle),
+                &i_id,
+                format!("[AsumiGal] 游戏进程已全部退出，本次游玩时长 {} 秒", duration),
+            );
             remove_running_instance(&i_id);
             let _ = app_handle.emit("game-finished", GameFinishedPayload {
                 instance_id: i_id,
@@ -1059,12 +1350,57 @@ pub async fn launch_game(app: AppHandle, instance_id: String, config: WineConfig
     Ok(pid)
 }
 
+fn stop_parallels_instance(
+    exe_path: &Path,
+    bottle_path: &str,
+    processes: &[ProcessInfo],
+) -> Result<Vec<u32>, String> {
+    let exe_name = exe_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_string();
+    if exe_name.is_empty() {
+        return Err("无法解析可执行文件名称".to_string());
+    }
+
+    let vm_name = extract_vm_name(bottle_path).unwrap_or_default();
+    let mut killed = Vec::new();
+
+    // 1) 如果在融合模式下存在宿主机 WinAppHelper 代理进程，先记录并清理
+    let helper_pids = find_parallels_host_helper_pids(&exe_name.to_lowercase(), processes);
+    if !helper_pids.is_empty() {
+        killed.extend(terminate_pids(helper_pids));
+    }
+
+    // 2) 通过 prlctl exec taskkill 终止虚拟机内的 Windows 游戏进程
+    if !vm_name.is_empty() {
+        let out = Command::new(resolve_prlctl_bin())
+            .args(["exec", &vm_name, "taskkill", "/F", "/IM", &exe_name])
+            .output()
+            .map_err(|e| format!("执行 prlctl taskkill 失败: {}", e))?;
+
+        if out.status.success() || !killed.is_empty() {
+            if killed.is_empty() {
+                killed.push(0);
+            }
+            return Ok(killed);
+        }
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let detail = if !stderr.is_empty() { stderr } else { stdout };
+        return Err(format!("未能终止 Parallels 虚拟机内的进程 {}: {}", exe_name, detail));
+    }
+
+    if killed.is_empty() {
+        return Err("未找到对应的 Parallels 虚拟机或运行进程".to_string());
+    }
+    Ok(killed)
+}
+
 #[command]
 pub async fn stop_game(instance_id: String, config: WineConfig) -> Result<Vec<u32>, String> {
     let mode = config.run_mode.as_deref().unwrap_or("crossover");
-    if mode == "parallels" {
-        return Err("Parallels 模式暂不支持停止实例".to_string());
-    }
 
     let tracked = get_tracked_instance(&instance_id);
     if let Some(info) = tracked.as_ref() {
@@ -1085,6 +1421,8 @@ pub async fn stop_game(instance_id: String, config: WineConfig) -> Result<Vec<u3
 
     let mut killed = if mode == "direct" {
         stop_direct_instance(launcher_pid, &exe_path, &processes)?
+    } else if mode == "parallels" {
+        stop_parallels_instance(&exe_path, &config.bottle_path, &processes)?
     } else {
         let bottle_path = expand_tilde(&config.bottle_path);
         stop_crossover_instance(launcher_pid, &exe_path, &bottle_path, &processes)?

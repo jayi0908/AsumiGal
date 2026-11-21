@@ -82,26 +82,29 @@ export function LaunchControl({
   const isDark = currentTheme === 'dark';
 
   const statLabelClass = clsx(
-    "text-xs font-bold uppercase tracking-wider mb-0.5",
-    isDark ? "text-white/40" : "text-gray-500"
+    "text-xs font-semibold tracking-wider mb-0.5",
+    isDark ? "text-white/50" : "text-slate-700/80"
   );
   const statValueClass = clsx(
     "text-lg font-bold font-mono tracking-tight flex items-center gap-2",
-    isDark ? "text-white/90" : "text-gray-800"
+    isDark ? "text-white/95 drop-shadow-sm" : "text-slate-900"
   );
 
   return (
     <div className="w-full flex items-end justify-between px-10 pb-8 relative z-30">
         {/* 上次运行 & 总时长 */}
-        <div className="flex gap-8 pb-1 items-center">
+        <div className={clsx(
+          "flex gap-7 items-center px-4 py-2.5 rounded-2xl transition-colors",
+          isDark ? "" : "bg-white/45 backdrop-blur-md border border-white/60 shadow-sm"
+        )}>
           <div className="flex flex-col">
              <span className={statLabelClass}>上次运行</span>
              <div className={statValueClass}>
-                 <History size={16} className={isDark ? "text-white/50" : "text-gray-400"} />
+                 <History size={16} className={isDark ? "text-white/60" : "text-slate-600"} />
                  {getLastPlayedDate(currentInstance.lastPlayed)}
              </div>
           </div>
-          <div className={clsx("w-px h-8", isDark ? "bg-white/10" : "bg-black/10")} />
+          <div className={clsx("w-px h-8", isDark ? "bg-white/15" : "bg-slate-900/15")} />
           <div className="flex flex-col">
              <span className={statLabelClass}>总运行时长</span>
              <div className={statValueClass}>
@@ -112,17 +115,17 @@ export function LaunchControl({
 
         <div className="flex items-end gap-3">
           {/* 今日游玩时长 */}
-          <Tooltip label={dryRunActive && dryRunInstanceId === currentInstance?.id ? "关闭 dry run" : "开启 dry run"} position="top">
+          <Tooltip label={dryRunActive && dryRunInstanceId === currentInstance?.id ? "关闭计时" : "开启手动计时"} position="top">
             <button
               onClick={() => currentInstance && onToggleDryRun(currentInstance.id)}
               className={clsx(
                 "h-20 rounded-2xl flex flex-col items-center justify-center px-6 transition-all border overflow-hidden min-w-[100px] cursor-pointer group",
                 liquidGlassStyles["wrapper"],
                 dryRunActive && dryRunInstanceId === currentInstance?.id
-                  ? (isDark ? "border-green-500/30 shadow-lg shadow-green-500/10" : "border-green-500/40 shadow-xl ring-1 ring-green-500/10")
+                  ? (isDark ? "border-emerald-500/35 shadow-lg shadow-emerald-500/10" : "border-emerald-500/45 shadow-lg ring-1 ring-emerald-500/15")
                   : (isDark
-                    ? "border-white/10 shadow-lg group-hover:border-blue-500/30 group-hover:shadow-blue-500/5"
-                    : "border-white/60 shadow-xl ring-1 ring-black/5 group-hover:border-blue-500/30")
+                    ? "border-white/10 shadow-lg group-hover:border-indigo-400/35"
+                    : "border-slate-300/70 shadow-lg group-hover:border-indigo-500/40")
               )}
             >
             <div className={liquidGlassStyles["effect"]} />
@@ -130,22 +133,22 @@ export function LaunchControl({
             <div className={clsx(
               "absolute inset-x-0 bottom-0 h-full bg-gradient-to-t opacity-0 group-hover:opacity-100 transition-opacity duration-500 z-[3]",
               dryRunActive && dryRunInstanceId === currentInstance?.id
-                ? "from-green-600/20 to-transparent"
-                : "from-blue-600/20 to-transparent"
+                ? "from-emerald-500/15 to-transparent"
+                : "from-indigo-500/15 to-transparent"
             )} />
             <div className="relative z-[3] flex flex-col items-center justify-center">
-              <span className={clsx("text-xs font-bold uppercase tracking-wider mb-1", isDark ? "text-white/50" : "text-gray-500")}>今日游玩</span>
+              <span className={clsx("text-xs font-semibold tracking-wider mb-1", isDark ? "text-white/55" : "text-slate-600")}>今日游玩</span>
               <div className="flex items-center gap-2">
                  <Clock size={16} className={clsx(
                    dryRunActive && dryRunInstanceId === currentInstance?.id
-                     ? "text-green-500 animate-pulse"
-                     : "text-blue-500"
+                     ? "text-emerald-500 animate-pulse"
+                     : isDark ? "text-indigo-400" : "text-indigo-600"
                  )} />
                  <span className={clsx(
                    "text-xl font-bold font-mono",
                    dryRunActive && dryRunInstanceId === currentInstance?.id
-                     ? (isDark ? "text-green-400" : "text-green-600")
-                     : (isDark ? "text-blue-400" : "text-blue-600")
+                     ? (isDark ? "text-emerald-400" : "text-emerald-700")
+                     : (isDark ? "text-indigo-300" : "text-indigo-700")
                  )}>
                      {formatTime(getDailyTime(currentInstance))}
                  </span>
@@ -154,8 +157,8 @@ export function LaunchControl({
             <div className={clsx(
               "absolute inset-x-0 bottom-0 h-1 transition-colors duration-300 z-[3]",
               dryRunActive && dryRunInstanceId === currentInstance?.id
-                ? "bg-green-500/50"
-                : "bg-blue-500/50"
+                ? "bg-emerald-500/60"
+                : "bg-indigo-500/50"
             )} />
           </button>
           </Tooltip>
@@ -165,33 +168,51 @@ export function LaunchControl({
             {/* 快速切换列表 */}
             <AnimatePresence>
               {isOpen && (
-                <motion.div
-                  initial={{ opacity: 0, y: 10, scale: 0.95 }}
-                  animate={{ opacity: 1, y: 0, scale: 1 }}
-                  exit={{ opacity: 0, y: 10, scale: 0.95 }}
-                  className="absolute bottom-full right-0 mb-3 w-64 bg-[#1e1e2e]/90 backdrop-blur-xl border border-white/10 rounded-xl overflow-hidden shadow-2xl z-40"
-                >
-                   <div className="max-h-[200px] overflow-y-auto p-2 space-y-1 custom-scrollbar">
-                    {instances.map((instance) => (
-                      <button
-                        key={instance.id}
-                        onClick={() => { setSelectedId(instance.id); setIsOpen(false); }}
-                        className={clsx(
-                          "w-full flex items-center gap-3 p-2 rounded-lg transition-all text-left group border",
-                          selectedId === instance.id
-                            ? "bg-white/10 border-white/10"
-                            : "hover:bg-white/5 border-transparent"
-                        )}
-                      >
-                        <Box size={16} className="text-indigo-300" />
-                        <div className="flex-1 min-w-0">
-                          <div className="font-bold text-sm truncate text-white">{instance.name}</div>
-                          <div className="text-xs text-white/40 truncate">{instance.info}</div>
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                </motion.div>
+                <>
+                  <div className="fixed inset-0 z-30" onClick={() => setIsOpen(false)} />
+                  <motion.div
+                    initial={{ opacity: 0, y: 8, scale: 0.96 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    exit={{ opacity: 0, y: 8, scale: 0.96 }}
+                    className={clsx(
+                      "absolute bottom-full right-0 mb-3 w-64 backdrop-blur-xl border rounded-xl overflow-hidden shadow-2xl z-40",
+                      isDark
+                        ? "bg-[#1b1e28]/95 border-white/10"
+                        : "bg-white/95 border-slate-300/80"
+                    )}
+                  >
+                     <div className="max-h-[220px] overflow-y-auto p-1.5 space-y-1 custom-scrollbar">
+                      {instances.map((instance) => (
+                        <button
+                          key={instance.id}
+                          onClick={() => { setSelectedId(instance.id); setIsOpen(false); }}
+                          className={clsx(
+                            "w-full flex items-center gap-2.5 p-2 rounded-lg transition-all text-left border",
+                            selectedId === instance.id
+                              ? (isDark
+                                  ? "bg-indigo-500/20 border-indigo-400/30"
+                                  : "bg-indigo-500/10 border-indigo-500/25")
+                              : (isDark
+                                  ? "hover:bg-white/5 border-transparent"
+                                  : "hover:bg-slate-900/5 border-transparent")
+                          )}
+                        >
+                          <Box size={15} className={isDark ? "text-indigo-300 shrink-0" : "text-indigo-600 shrink-0"} />
+                          <div className="flex-1 min-w-0">
+                            <div className={clsx("font-semibold text-sm truncate", isDark ? "text-slate-100" : "text-slate-800")}>
+                              {instance.name}
+                            </div>
+                            {instance.info && (
+                              <div className={clsx("text-xs truncate", isDark ? "text-slate-400" : "text-slate-500")}>
+                                {instance.info}
+                              </div>
+                            )}
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  </motion.div>
+                </>
               )}
             </AnimatePresence>
           
@@ -202,30 +223,54 @@ export function LaunchControl({
                   "w-56 h-20 overflow-hidden border transition-all duration-300 cursor-pointer group",
                   liquidGlassStyles["wrapper"],
                   isDark
-                    ? "border-white/10 group-hover:border-indigo-500/50 shadow-lg"
-                    : "border-white/60 group-hover:border-indigo-500/40 shadow-xl ring-1 ring-black/5"
+                    ? "border-white/10 group-hover:border-indigo-400/50 shadow-lg"
+                    : "border-slate-300/70 group-hover:border-indigo-500/50 shadow-lg"
                 )}
               >
                   <div className={liquidGlassStyles["effect"]} />
                   <div className={liquidGlassStyles["shine"]} />
-                  <div className="absolute inset-x-0 bottom-0 h-full bg-gradient-to-t from-indigo-600/20 to-transparent opacity-50 group-hover:opacity-100 transition-opacity duration-500 z-[3]" />
-                  <div className="absolute inset-0 flex items-center pl-6 pr-16 z-[3]">
+                  <div className={clsx(
+                    "absolute inset-x-0 bottom-0 h-full bg-gradient-to-t transition-opacity duration-500 z-[3]",
+                    isDark
+                      ? "from-indigo-600/25 to-transparent opacity-50 group-hover:opacity-100"
+                      : "from-indigo-500/15 to-transparent opacity-60 group-hover:opacity-100"
+                  )} />
+                  <div className="absolute inset-0 flex items-center pl-5 pr-14 z-[3]">
                       <div className="flex flex-col items-start text-left w-full">
-                          <div className="text-xl font-bold tracking-wide truncate w-full text-white">启动游戏</div>
-                          <div className="text-xs text-indigo-200/70 font-medium mt-1 truncate w-full">
+                          <div className={clsx(
+                            "text-xl font-bold tracking-wide truncate w-full",
+                            isDark ? "text-white" : "text-slate-900"
+                          )}>
+                            启动游戏
+                          </div>
+                          <div className={clsx(
+                            "text-xs font-medium mt-0.5 truncate w-full",
+                            isDark ? "text-indigo-200/80" : "text-indigo-700/85"
+                          )}>
                               {currentInstance ? currentInstance.name : "无实例"}
                           </div>
                       </div>
                   </div>
                   <div className="absolute right-4 bottom-4 z-[3]">
-                     <Play fill="currentColor" className="w-6 h-6 text-white group-hover:scale-110 transition-all" />
+                     <Play
+                       fill="currentColor"
+                       className={clsx(
+                         "w-5 h-5 group-hover:scale-110 transition-all",
+                         isDark ? "text-white" : "text-indigo-600"
+                       )}
+                     />
                   </div>
               </button>
 
-              <div className="absolute top-2 right-2 flex gap-1 bg-black/20 backdrop-blur rounded-lg p-0.5 border border-white/5 transition-opacity duration-200 z-[5]">
-                  <ToolBtn label="打开实例设置" icon={<Settings size={12} />} onClick={handleOpenCurrentSettings} />
-                  <ToolBtn label="切换游戏实例" icon={<ArrowLeftRight size={12} />} onClick={() => setIsOpen(!isOpen)} active={isOpen} />
-                  <ToolBtn label="终止当前实例" icon={<Square size={12} />} onClick={handleStopInstance} />
+              <div className={clsx(
+                "absolute top-2 right-2 flex gap-0.5 backdrop-blur rounded-lg p-0.5 border transition-opacity duration-200 z-[5]",
+                isDark
+                  ? "bg-black/25 border-white/10"
+                  : "bg-slate-900/[0.06] border-slate-900/10"
+              )}>
+                  <ToolBtn label="实例设置" icon={<Settings size={12} />} onClick={handleOpenCurrentSettings} isDark={isDark} />
+                  <ToolBtn label="切换实例" icon={<ArrowLeftRight size={12} />} onClick={() => setIsOpen(!isOpen)} active={isOpen} isDark={isDark} />
+                  <ToolBtn label="终止运行" icon={<Square size={12} />} onClick={handleStopInstance} isDark={isDark} />
               </div>
             </div>
           </div>
@@ -234,14 +279,18 @@ export function LaunchControl({
   );
 }
 
-function ToolBtn({ label, icon, onClick, active }: { label: string; icon: any; onClick: () => void; active?: boolean }) {
+function ToolBtn({ label, icon, onClick, active, isDark }: { label: string; icon: any; onClick: () => void; active?: boolean; isDark: boolean }) {
   return (
     <Tooltip label={label} position="top">
       <button
         onClick={(e) => { e.stopPropagation(); onClick(); }}
         className={clsx(
           "w-6 h-6 rounded flex items-center justify-center transition-all",
-          active ? "bg-indigo-500 text-white shadow-sm" : "text-white/40 hover:text-white hover:bg-white/10"
+          active
+            ? "bg-indigo-600 text-white shadow-sm"
+            : isDark
+              ? "text-white/55 hover:text-white hover:bg-white/10"
+              : "text-slate-600 hover:text-slate-900 hover:bg-slate-900/10"
         )}
       >
         {icon}
